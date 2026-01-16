@@ -1,17 +1,19 @@
-use crate::context::SecurityContext;
+use std::{collections::HashMap, mem::forget};
+
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::take_while1,
     character::complete::char,
     combinator::map,
     multi::separated_list1,
     sequence::{delimited, separated_pair},
-    IResult,
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use rusqlite::{Connection, Error, Result};
-use std::{collections::HashMap, mem::forget};
+
+use crate::context::SecurityContext;
 
 /// A single requirement: key=value
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,8 +98,7 @@ pub fn parse(expr: &str) -> std::result::Result<Label, String> {
 // Label cache and DB operations
 // ============================================================================
 
-static LABEL_CACHE: Lazy<Mutex<HashMap<i64, Label>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static LABEL_CACHE: Lazy<Mutex<HashMap<i64, Label>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Define a label using a Connection reference (for tests and direct use)
 pub fn define_label(conn: &Connection, expr: &str) -> Result<i64> {
@@ -106,11 +107,9 @@ pub fn define_label(conn: &Connection, expr: &str) -> Result<i64> {
         [expr],
     )?;
 
-    let id: i64 = conn.query_row(
-        "SELECT id FROM sec_labels WHERE expr = ?1",
-        [expr],
-        |r| r.get(0),
-    )?;
+    let id: i64 = conn.query_row("SELECT id FROM sec_labels WHERE expr = ?1", [expr], |r| {
+        r.get(0)
+    })?;
 
     if let Ok(label) = parse(expr) {
         LABEL_CACHE.lock().insert(id, label);
@@ -128,7 +127,11 @@ pub fn define_label_raw(db_ptr: usize, expr: &str) -> Result<i64> {
 }
 
 /// Evaluate label by ID against context (using Connection)
-pub fn evaluate_by_id_conn(conn: &Connection, label_id: i64, ctx: &SecurityContext) -> Result<bool> {
+pub fn evaluate_by_id_conn(
+    conn: &Connection,
+    label_id: i64,
+    ctx: &SecurityContext,
+) -> Result<bool> {
     // Check cache first
     if let Some(label) = LABEL_CACHE.lock().get(&label_id) {
         return Ok(label.evaluate(ctx));

@@ -1,5 +1,6 @@
-use crate::{context::SecurityContext, get_context, label};
 use rusqlite::{Connection, Result};
+
+use crate::{context::SecurityContext, get_context, label};
 
 #[derive(Debug)]
 struct SecTable {
@@ -111,9 +112,8 @@ fn load_sec_tables(conn: &Connection) -> Result<Vec<SecTable>> {
 }
 
 fn load_sec_columns(conn: &Connection, logical_table: &str) -> Result<Vec<SecColumn>> {
-    let mut stmt = conn.prepare(
-        "SELECT column_name, label_id FROM sec_columns WHERE logical_table = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT column_name, label_id FROM sec_columns WHERE logical_table = ?1")?;
 
     let cols = stmt
         .query_map([logical_table], |row| {
@@ -127,11 +127,7 @@ fn load_sec_columns(conn: &Connection, logical_table: &str) -> Result<Vec<SecCol
     Ok(cols)
 }
 
-fn refresh_single_view(
-    conn: &Connection,
-    table: &SecTable,
-    ctx: &SecurityContext,
-) -> Result<()> {
+fn refresh_single_view(conn: &Connection, table: &SecTable, ctx: &SecurityContext) -> Result<()> {
     // Check table-level visibility
     if !label::is_visible_conn(conn, table.table_label_id, ctx) {
         conn.execute(
@@ -188,11 +184,7 @@ fn refresh_single_view(
     Ok(())
 }
 
-fn create_write_triggers(
-    conn: &Connection,
-    table: &SecTable,
-    visible_cols: &[&str],
-) -> Result<()> {
+fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&str]) -> Result<()> {
     let logical = &table.logical_name;
     let physical = &table.physical_name;
     let row_label_col = &table.row_label_col;
