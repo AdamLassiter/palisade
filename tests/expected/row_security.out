@@ -1,0 +1,18 @@
+------------------------------------------------------------
+[Regular user]
+id  name 
+--  -----
+1   Alice
+------------------------------------------------------------
+[Auditor]
+email           id  name   
+--------------  --  -------
+alice@ex.com    1   Alice  
+charlie@ex.com  3   Charlie
+------------------------------------------------------------
+[Admin]
+email           id  name     ssn
+--------------  --  -------  ---
+alice@ex.com    1   Alice    111
+bob@ex.com      2   Bob      222
+charlie@ex.com  3   Charlie  333

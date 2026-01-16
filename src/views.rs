@@ -15,15 +15,14 @@ struct SecColumn {
     label_id: Option<i64>,
 }
 
-pub fn register_table_raw(
-    db_ptr: usize,
+/// Register a table using Connection reference
+pub fn register_table(
+    conn: &Connection,
     logical: &str,
     physical: &str,
     row_label_col: &str,
     table_label_id: Option<i64>,
 ) -> Result<()> {
-    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
-
     conn.execute(
         r#"
         INSERT OR REPLACE INTO sec_tables 
@@ -34,7 +33,7 @@ pub fn register_table_raw(
     )?;
 
     // Auto-populate sec_columns from physical table schema
-    let cols = get_physical_columns(&conn, physical)?;
+    let cols = get_physical_columns(conn, physical)?;
     for col in cols {
         if col != row_label_col {
             conn.execute(
@@ -47,8 +46,21 @@ pub fn register_table_raw(
         }
     }
 
-    std::mem::forget(conn);
     Ok(())
+}
+
+/// Register a table from raw pointer (for FFI)
+pub fn register_table_raw(
+    db_ptr: usize,
+    logical: &str,
+    physical: &str,
+    row_label_col: &str,
+    table_label_id: Option<i64>,
+) -> Result<()> {
+    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
+    let result = register_table(&conn, logical, physical, row_label_col, table_label_id);
+    std::mem::forget(conn);
+    result
 }
 
 fn get_physical_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -59,18 +71,24 @@ fn get_physical_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(cols)
 }
 
+/// Refresh views using Connection reference
+pub fn refresh_views(conn: &Connection, ctx: &SecurityContext) -> Result<()> {
+    let tables = load_sec_tables(conn)?;
+
+    for table in tables {
+        refresh_single_view(conn, &table, ctx)?;
+    }
+
+    Ok(())
+}
+
+/// Refresh views from raw pointer (for FFI)
 pub fn refresh_views_raw(db_ptr: usize) -> Result<()> {
     let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
     let ctx = get_context(db_ptr);
-
-    let tables = load_sec_tables(&conn)?;
-
-    for table in tables {
-        refresh_single_view(&conn, &table, &ctx, db_ptr)?;
-    }
-
+    let result = refresh_views(&conn, &ctx);
     std::mem::forget(conn);
-    Ok(())
+    result
 }
 
 fn load_sec_tables(conn: &Connection) -> Result<Vec<SecTable>> {
@@ -113,11 +131,9 @@ fn refresh_single_view(
     conn: &Connection,
     table: &SecTable,
     ctx: &SecurityContext,
-    db_ptr: usize,
 ) -> Result<()> {
     // Check table-level visibility
-    if !label::is_visible(db_ptr, table.table_label_id, ctx) {
-        // Drop view if exists, user shouldn't see this table at all
+    if !label::is_visible_conn(conn, table.table_label_id, ctx) {
         conn.execute(
             &format!("DROP VIEW IF EXISTS \"{}\"", table.logical_name),
             [],
@@ -129,12 +145,11 @@ fn refresh_single_view(
     let all_columns = load_sec_columns(conn, &table.logical_name)?;
     let visible_columns: Vec<&str> = all_columns
         .iter()
-        .filter(|c| label::is_visible(db_ptr, c.label_id, ctx))
+        .filter(|c| label::is_visible_conn(conn, c.label_id, ctx))
         .map(|c| c.column_name.as_str())
         .collect();
 
     if visible_columns.is_empty() {
-        // No columns visible, drop the view
         conn.execute(
             &format!("DROP VIEW IF EXISTS \"{}\"", table.logical_name),
             [],
@@ -167,7 +182,7 @@ fn refresh_single_view(
 
     conn.execute_batch(&view_sql)?;
 
-    // Optionally: create INSTEAD OF triggers for INSERT/UPDATE/DELETE
+    // Create INSTEAD OF triggers for writes
     create_write_triggers(conn, table, &visible_columns)?;
 
     Ok(())
@@ -182,7 +197,6 @@ fn create_write_triggers(
     let physical = &table.physical_name;
     let row_label_col = &table.row_label_col;
 
-    // INSERT trigger
     let insert_cols = visible_cols
         .iter()
         .map(|c| format!("\"{}\"", c))
@@ -210,7 +224,6 @@ fn create_write_triggers(
         "#
     );
 
-    // UPDATE trigger
     let update_sets = visible_cols
         .iter()
         .map(|c| format!("\"{}\" = NEW.\"{}\"", c, c))
@@ -231,7 +244,6 @@ fn create_write_triggers(
         "#
     );
 
-    // DELETE trigger
     let delete_trigger = format!(
         r#"
         DROP TRIGGER IF EXISTS "{logical}_sec_del";

@@ -8,9 +8,10 @@ use nom::{
     sequence::{delimited, separated_pair},
     IResult,
 };
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use rusqlite::{Connection, Result};
-use std::collections::HashMap;
+use rusqlite::{Connection, Error, Result};
+use std::{collections::HashMap, mem::forget};
 
 /// A single requirement: key=value
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +67,6 @@ fn clause(input: &str) -> IResult<&str, Clause> {
 }
 
 fn label_expr(input: &str) -> IResult<&str, Label> {
-    // Special case: "true"
     if input.trim() == "true" {
         return Ok((
             "",
@@ -96,60 +96,74 @@ pub fn parse(expr: &str) -> std::result::Result<Label, String> {
 // Label cache and DB operations
 // ============================================================================
 
-static LABEL_CACHE: once_cell::sync::Lazy<Mutex<HashMap<i64, Label>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+static LABEL_CACHE: Lazy<Mutex<HashMap<i64, Label>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Define a label, returning its ID. Uses raw db pointer.
-pub fn define_label_raw(db_ptr: usize, expr: &str) -> Result<i64> {
-    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
-
-    // Upsert and get ID
+/// Define a label using a Connection reference (for tests and direct use)
+pub fn define_label(conn: &Connection, expr: &str) -> Result<i64> {
     conn.execute(
         "INSERT OR IGNORE INTO sec_labels (expr) VALUES (?1)",
         [expr],
     )?;
 
-    let id: i64 =
-        conn.query_row("SELECT id FROM sec_labels WHERE expr = ?1", [expr], |r| {
-            r.get(0)
-        })?;
+    let id: i64 = conn.query_row(
+        "SELECT id FROM sec_labels WHERE expr = ?1",
+        [expr],
+        |r| r.get(0),
+    )?;
 
-    // Cache parsed label
     if let Ok(label) = parse(expr) {
         LABEL_CACHE.lock().insert(id, label);
     }
 
-    // Prevent drop from closing the connection we don't own
-    std::mem::forget(conn);
-
     Ok(id)
 }
 
-/// Evaluate label by ID against context
-pub fn evaluate_by_id(db_ptr: usize, label_id: i64, ctx: &SecurityContext) -> Result<bool> {
+/// Define a label from raw db pointer (for FFI)
+pub fn define_label_raw(db_ptr: usize, expr: &str) -> Result<i64> {
+    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
+    let result = define_label(&conn, expr);
+    forget(conn);
+    result
+}
+
+/// Evaluate label by ID against context (using Connection)
+pub fn evaluate_by_id_conn(conn: &Connection, label_id: i64, ctx: &SecurityContext) -> Result<bool> {
     // Check cache first
     if let Some(label) = LABEL_CACHE.lock().get(&label_id) {
         return Ok(label.evaluate(ctx));
     }
-
     // Load from DB
-    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
     let expr: String = conn.query_row(
         "SELECT expr FROM sec_labels WHERE id = ?1",
         [label_id],
         |r| r.get(0),
     )?;
-    std::mem::forget(conn);
 
-    let label = parse(&expr).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let label = parse(&expr).map_err(|_| Error::InvalidQuery)?;
 
-    // Cache it
     LABEL_CACHE.lock().insert(label_id, label.clone());
 
     Ok(label.evaluate(ctx))
 }
 
-/// Check if a label allows access given current context
+/// Evaluate label by ID from raw pointer (for FFI)
+pub fn evaluate_by_id(db_ptr: usize, label_id: i64, ctx: &SecurityContext) -> Result<bool> {
+    let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
+    let result = evaluate_by_id_conn(&conn, label_id, ctx);
+    forget(conn);
+    result
+}
+
+/// Check if a label allows access (using Connection)
+pub fn is_visible_conn(conn: &Connection, label_id: Option<i64>, ctx: &SecurityContext) -> bool {
+    match label_id {
+        None => true,
+        Some(id) => evaluate_by_id_conn(conn, id, ctx).unwrap_or(false),
+    }
+}
+
+/// Check if a label allows access from raw pointer (for FFI)
 pub fn is_visible(db_ptr: usize, label_id: Option<i64>, ctx: &SecurityContext) -> bool {
     match label_id {
         None => true,

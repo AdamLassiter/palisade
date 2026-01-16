@@ -1,16 +1,32 @@
 mod authorizer;
 pub mod context;
-pub mod ffi;
 pub mod label;
+pub mod register;
 pub mod views;
 
-use once_cell::sync::Lazy;
-use parking_lot::Mutex;
-use rusqlite::{Connection, Result};
-use std::collections::HashMap;
-use std::ffi::{c_char, c_int};
+use std::{
+    collections::HashMap,
+    ffi::{CString, c_char, c_int},
+    mem::forget,
+    ptr,
+};
 
 use context::SecurityContext;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use rusqlite::{
+    Connection,
+    Result,
+    ffi::{
+        self,
+        SQLITE_ERROR,
+        SQLITE_OK,
+        rusqlite_extension_init2,
+        sqlite3,
+        sqlite3_api_routines,
+        sqlite3_malloc,
+    },
+};
 
 /// Global map: db handle address -> SecurityContext
 pub static CONTEXTS: Lazy<Mutex<HashMap<usize, SecurityContext>>> =
@@ -25,37 +41,65 @@ pub fn set_context(db_ptr: usize, ctx: SecurityContext) {
     CONTEXTS.lock().insert(db_ptr, ctx);
 }
 
+/// Initialize the extension entry point for SQLite.
+///
+/// # Safety
+/// Must only be invoked by SQLite when loading the extension.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sqlite3_secext_init(
-    db: *mut rusqlite::ffi::sqlite3,
-    _pz_err_msg: *mut *mut c_char,
-    p_api: *mut rusqlite::ffi::sqlite3_api_routines,
+pub unsafe extern "C" fn sqlite3_sqlsec_init(
+    db: *mut sqlite3,
+    pz_err_msg: *mut *mut c_char,
+    p_api: *mut sqlite3_api_routines,
 ) -> c_int {
-    unsafe {
-        // Initialize the API for loadable extensions
-        if let Err(_) = rusqlite::ffi::rusqlite_extension_init2(p_api) {
-            return rusqlite::ffi::SQLITE_ERROR;
+    // Safety: called by SQLite loader
+    if let Err(e) = unsafe { rusqlite_extension_init2(p_api) } {
+        set_err_message(pz_err_msg, &format!("failed to init SQLite API: {e:?}"));
+        return SQLITE_ERROR;
+    }
+
+    match unsafe { init_extension_ffi(db) } {
+        Ok(_) => {
+            // Install authorizer
+            authorizer::install(db);
+            SQLITE_OK
         }
-
-        if init_extension_ffi(db).is_err() {
-            return rusqlite::ffi::SQLITE_ERROR;
+        Err(e) => {
+            set_err_message(pz_err_msg, &format!("sqlsec initialization failed: {e}"));
+            SQLITE_ERROR
         }
-
-        // Install authorizer
-        authorizer::install(db);
-
-        rusqlite::ffi::SQLITE_OK
     }
 }
 
-/// Initialize using raw FFI (for loadable extension)
-fn init_extension_ffi(db: *mut rusqlite::ffi::sqlite3) -> Result<()> {
+/// Set the SQLite extension error message.
+///
+/// Allocates a C string using `sqlite3_malloc` and writes its pointer to `pz_err_msg`.
+fn set_err_message(pz_err_msg: *mut *mut c_char, msg: &str) {
     unsafe {
-        let conn = Connection::from_handle(db)?;
+        if pz_err_msg.is_null() {
+            return;
+        }
 
-        // Create metadata tables
-        conn.execute_batch(
-            r#"
+        // Compose message and ensure null terminator
+        let msg_owned = CString::new(msg).unwrap_or_else(|_| CString::new("error").unwrap());
+        let bytes = msg_owned.as_bytes_with_nul();
+
+        // Allocate memory that SQLite expects to own
+        let buf = sqlite3_malloc(bytes.len() as i32) as *mut c_char;
+        if buf.is_null() {
+            return;
+        }
+
+        ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
+        *pz_err_msg = buf;
+    }
+}
+
+/// Initialize the database objects when extension loads via FFI.
+unsafe fn init_extension_ffi(db: *mut sqlite3) -> Result<()> {
+    let conn = unsafe { Connection::from_handle(db) }?;
+
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS sec_labels (
             id   INTEGER PRIMARY KEY,
             expr TEXT NOT NULL UNIQUE
@@ -75,13 +119,13 @@ fn init_extension_ffi(db: *mut rusqlite::ffi::sqlite3) -> Result<()> {
             PRIMARY KEY (logical_table, column_name)
         );
         "#,
-        )?;
+    )?;
 
-        std::mem::forget(conn); // Don't close the connection we don't own
+    // Ensure we don’t close SQLite’s internal handle
+    forget(conn);
 
-        // Register functions via FFI
-        ffi::register_functions_ffi(db);
+    // Register scalar functions
+    register::register_functions_ffi(db);
 
-        Ok(())
-    }
+    Ok(())
 }
