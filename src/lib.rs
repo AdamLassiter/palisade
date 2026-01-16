@@ -1,3 +1,4 @@
+#[cfg(false)]
 mod authorizer;
 pub mod context;
 pub mod label;
@@ -18,7 +19,6 @@ use rusqlite::{
     Connection,
     Result,
     ffi::{
-        self,
         SQLITE_ERROR,
         SQLITE_OK,
         rusqlite_extension_init2,
@@ -60,6 +60,7 @@ pub unsafe extern "C" fn sqlite3_sqlsec_init(
     match unsafe { init_extension_ffi(db) } {
         Ok(_) => {
             // Install authorizer
+            #[cfg(false)]
             authorizer::install(db);
             SQLITE_OK
         }

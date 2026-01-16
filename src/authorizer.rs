@@ -16,7 +16,7 @@ const METADATA_TABLES: &[&str] = &["sec_labels", "sec_tables", "sec_columns"];
 
 pub fn install(db: *mut sqlite3) {
     unsafe {
-        // sqlite3_set_authorizer(db, Some(authorizer_callback), std::ptr::null_mut());
+        sqlite3_set_authorizer(db, Some(authorizer_callback), std::ptr::null_mut());
     }
 }
 
