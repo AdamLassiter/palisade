@@ -1,7 +1,7 @@
 .output /dev/null
 CREATE TABLE __sec_customers (
     id           INTEGER PRIMARY KEY,
-    row_label_id INTEGER NOT NULL,
+    row_label_id INTEGER,
     name         TEXT,
     email        TEXT,
     ssn          TEXT

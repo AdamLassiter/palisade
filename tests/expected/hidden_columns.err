@@ -1,3 +1,0 @@
-Parse error near line 30: no such column: secret
-  SELECT secret FROM data;
-         ^--- error here

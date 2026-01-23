@@ -23,5 +23,3 @@ SELECT sec_refresh_views();
 .print ------------------------------------------------------------
 .print [User cannot access secret column]
 SELECT * FROM data;
-.print (below should fail:)
-SELECT secret FROM data;

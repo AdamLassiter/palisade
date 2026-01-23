@@ -1,0 +1,20 @@
+------------------------------------------------------------
+[Admin update/delete test]
+Original contents:
+id  item     quantity  row_label_id
+--  -------  --------  ------------
+1   Apples   10        1           
+2   Oranges  5         1           
+Performing UPDATE (increase Apples -> 20)
+id  item     quantity  row_label_id
+--  -------  --------  ------------
+1   Apples   20        1           
+2   Oranges  5         1           
+Performing DELETE (remove Oranges)
+id  item    quantity  row_label_id
+--  ------  --------  ------------
+1   Apples  20        1           
+Verify base table contents:
+id  row_label_id  item    quantity
+--  ------------  ------  --------
+1   1             Apples  20

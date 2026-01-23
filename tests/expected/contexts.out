@@ -1,16 +1,16 @@
 ------------------------------------------------------------
 [Guest]
-id  title 
---  ------
-1   Public
+id  row_label_id  title 
+--  ------------  ------
+1   1             Public
 ------------------------------------------------------------
 [Admin]
-id  title     
---  ----------
-1   Public    
-2   Admin Only
+id  row_label_id  title     
+--  ------------  ----------
+1   1             Public    
+2   2             Admin Only
 ------------------------------------------------------------
 [Guest again]
-id  title 
---  ------
-1   Public
+id  row_label_id  title 
+--  ------------  ------
+1   1             Public

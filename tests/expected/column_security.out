@@ -1,19 +1,19 @@
 ------------------------------------------------------------
 [Regular user]
-id  name   
---  -------
-1   Alice  
-3   Charlie
+id  name     row_label_id
+--  -------  ------------
+1   Alice    1           
+3   Charlie  1           
 ------------------------------------------------------------
 [Finance]
-department   id  name   
------------  --  -------
-Sales        1   Alice  
-Engineering  3   Charlie
+department   id  name     row_label_id
+-----------  --  -------  ------------
+Sales        1   Alice    1           
+Engineering  3   Charlie  1           
 ------------------------------------------------------------
 [Manager]
-id  name     salary
---  -------  ------
-1   Alice    50000 
-2   Bob      90000 
-3   Charlie  60000
+id  name     row_label_id  salary
+--  -------  ------------  ------
+1   Alice    1             50000 
+2   Bob      2             90000 
+3   Charlie  1             60000

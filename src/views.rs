@@ -36,15 +36,13 @@ pub fn register_table(
     // Auto-populate sec_columns from physical table schema
     let cols = get_physical_columns(conn, physical)?;
     for col in cols {
-        if col != row_label_col {
-            conn.execute(
-                r#"
-                INSERT OR IGNORE INTO sec_columns (logical_table, column_name, label_id)
-                VALUES (?1, ?2, NULL)
-                "#,
-                rusqlite::params![logical, col],
-            )?;
-        }
+        conn.execute(
+            r#"
+            INSERT OR IGNORE INTO sec_columns (logical_table, column_name, label_id)
+            VALUES (?1, ?2, NULL)
+            "#,
+            rusqlite::params![logical, col],
+        )?;
     }
 
     Ok(())
@@ -184,6 +182,38 @@ fn refresh_single_view(conn: &Connection, table: &SecTable, ctx: &SecurityContex
     Ok(())
 }
 
+fn get_primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{}\")", table))?;
+
+    let mut pk_cols: Vec<(i64, String)> = Vec::new();
+
+    let rows = stmt.query_map([], |row| {
+        let name: String = row.get(1)?;
+        let pk: i64 = row.get(5)?;
+        Ok((pk, name))
+    })?;
+
+    for row in rows {
+        let (pk, name) = row?;
+        if pk > 0 {
+            pk_cols.push((pk, name));
+        }
+    }
+
+    // Sort by PK position (important for composite keys)
+    pk_cols.sort_by_key(|(pk, _)| *pk);
+
+    Ok(pk_cols.into_iter().map(|(_, name)| name).collect())
+}
+
+fn pk_where_clause(prefix: &str, pk_cols: &[String]) -> String {
+    pk_cols
+        .iter()
+        .map(|c| format!("\"{}\" = {}.\"{}\"", c, prefix, c))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
 fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&str]) -> Result<()> {
     let logical = &table.logical_name;
     let physical = &table.physical_name;
@@ -222,15 +252,32 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         .collect::<Vec<_>>()
         .join(", ");
 
+    let pk_cols = get_primary_key_columns(conn, physical)?;
+
+    if pk_cols.is_empty() {
+        return Err(rusqlite::Error::InvalidQuery); // or your own error
+    }
+
+    let pk_where_old = pk_where_clause("OLD", &pk_cols);
+
+    let pk_guard = pk_cols
+        .iter()
+        .map(|c| format!("OLD.\"{}\" != NEW.\"{}\"", c, c))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
     let update_trigger = format!(
         r#"
         DROP TRIGGER IF EXISTS "{logical}_sec_upd";
         CREATE TEMP TRIGGER "{logical}_sec_upd"
         INSTEAD OF UPDATE ON "{logical}"
         BEGIN
+            SELECT CASE WHEN {pk_guard}
+                THEN RAISE(ABORT, 'cannot update primary key')
+            END;
             UPDATE "{physical}"
             SET {update_sets}
-            WHERE rowid = OLD.rowid
+            WHERE {pk_where_old}
               AND sec_row_visible("{row_label_col}");
         END;
         "#
@@ -243,7 +290,7 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         INSTEAD OF DELETE ON "{logical}"
         BEGIN
             DELETE FROM "{physical}"
-            WHERE rowid = OLD.rowid
+            WHERE {pk_where_old}
               AND sec_row_visible("{row_label_col}");
         END;
         "#

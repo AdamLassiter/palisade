@@ -236,6 +236,11 @@ pub(crate) extern "C" fn ffi_sec_register_table(
         let logical_ptr = sqlite3_value_text(*argv);
         let physical_ptr = sqlite3_value_text(*argv.add(1));
         let row_col_ptr = sqlite3_value_text(*argv.add(2));
+        let table_label = if sqlite3_value_type(*argv.add(3)) == SQLITE_NULL {
+            None
+        } else {
+            Some(sqlite3_value_int64(*argv.add(3)))
+        };
 
         if logical_ptr.is_null() || physical_ptr.is_null() || row_col_ptr.is_null() {
             sqlite3_result_error(ctx, c"NULL argument".as_ptr(), -1);
@@ -245,12 +250,6 @@ pub(crate) extern "C" fn ffi_sec_register_table(
         let logical = CStr::from_ptr(logical_ptr as *const c_char).to_string_lossy();
         let physical = CStr::from_ptr(physical_ptr as *const c_char).to_string_lossy();
         let row_col = CStr::from_ptr(row_col_ptr as *const c_char).to_string_lossy();
-
-        let table_label = if sqlite3_value_type(*argv.add(3)) == SQLITE_NULL {
-            None
-        } else {
-            Some(sqlite3_value_int64(*argv.add(3)))
-        };
 
         let db_ptr = sqlite3_context_db_handle(ctx) as usize;
         match views::register_table_raw(db_ptr, &logical, &physical, &row_col, table_label) {

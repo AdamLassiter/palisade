@@ -5,7 +5,7 @@ Checking if logical view exists:
 [Admin table access]
 Checking if logical view exists:
 temp.reports
-data                id
-------------------  --
-Quarterly Results   1 
-Financial Forecast  2
+data                id  row_label_id
+------------------  --  ------------
+Quarterly Results   1   1           
+Financial Forecast  2   1

@@ -1,18 +1,18 @@
 ------------------------------------------------------------
 [Regular user]
-id  name 
---  -----
-1   Alice
+id  name   row_label_id
+--  -----  ------------
+1   Alice  1           
 ------------------------------------------------------------
 [Auditor]
-email           id  name   
---------------  --  -------
-alice@ex.com    1   Alice  
-charlie@ex.com  3   Charlie
+email           id  name     row_label_id
+--------------  --  -------  ------------
+alice@ex.com    1   Alice    1           
+charlie@ex.com  3   Charlie  3           
 ------------------------------------------------------------
 [Admin]
-email           id  name     ssn
---------------  --  -------  ---
-alice@ex.com    1   Alice    111
-bob@ex.com      2   Bob      222
-charlie@ex.com  3   Charlie  333
+email           id  name     row_label_id  ssn
+--------------  --  -------  ------------  ---
+alice@ex.com    1   Alice    1             111
+bob@ex.com      2   Bob      2             222
+charlie@ex.com  3   Charlie  3             333

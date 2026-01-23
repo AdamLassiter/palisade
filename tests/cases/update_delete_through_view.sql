@@ -2,7 +2,7 @@
 
 CREATE TABLE __sec_inventory (
     id           INTEGER PRIMARY KEY,
-    row_label_id INTEGER NOT NULL,
+    row_label_id INTEGER,
     item         TEXT,
     quantity     INTEGER
 );
