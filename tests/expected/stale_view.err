@@ -1,0 +1,2 @@
+Runtime error near line 38: assert_fresh: security views are stale: call sec_refresh_views()
+Runtime error near line 47: assert_fresh: security views are stale: call sec_refresh_views()
