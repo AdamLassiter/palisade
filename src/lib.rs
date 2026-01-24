@@ -115,6 +115,14 @@ unsafe fn init_extension_ffi(db: *mut sqlite3) -> Result<()> {
             label_id      INTEGER REFERENCES sec_labels(id),
             PRIMARY KEY (logical_table, column_name)
         );
+
+        CREATE TABLE IF NOT EXISTS sec_meta (
+            key   TEXT PRIMARY KEY,
+            value INTEGER
+        );
+        INSERT OR IGNORE INTO sec_meta VALUES ('generation', 0);
+        INSERT OR IGNORE INTO sec_meta VALUES ('last_refresh_generation', 0);
+        INSERT OR IGNORE INTO sec_meta VALUES ('views_initialized', 0);
         "#,
     )?;
 

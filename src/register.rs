@@ -1,4 +1,7 @@
-use std::ffi::{CStr, c_char, c_int};
+use std::{
+    ffi::{CStr, CString, c_char, c_int},
+    fmt::Display,
+};
 
 use rusqlite::ffi::{
     SQLITE_NULL,
@@ -16,13 +19,14 @@ use rusqlite::ffi::{
     sqlite3_value_type,
 };
 
-use crate::{
-    context,
-    get_context_stack,
-    label,
-    set_context_stack,
-    views::{self, sec_evaluate_insert_policy_raw},
-};
+use crate::{context, get_context_stack, label, set_context_stack, views};
+
+fn sqlite_error(ctx: *mut sqlite3_context, prefix: &str, e: impl Display) {
+    let msg = CString::new(format!("{prefix}: {e}")).unwrap();
+    unsafe {
+        sqlite3_result_error(ctx, msg.as_ptr(), -1);
+    }
+}
 
 /// Register all scalar functions using raw FFI
 pub(crate) fn register_functions_ffi(db: *mut sqlite3) {
@@ -130,18 +134,6 @@ pub(crate) fn register_functions_ffi(db: *mut sqlite3) {
             None,
             None,
         );
-
-        sqlite3_create_function_v2(
-            db,
-            c"sec_evaluate_insert_policy".as_ptr(),
-            1,
-            SQLITE_UTF8,
-            std::ptr::null_mut(),
-            Some(ffi_sec_evaluate_insert_policy),
-            None,
-            None,
-            None,
-        );
     }
 }
 
@@ -152,7 +144,7 @@ pub(crate) extern "C" fn ffi_sec_set_attr(
 ) {
     unsafe {
         if argc != 2 {
-            sqlite3_result_error(ctx, c"expected 2 arguments".as_ptr(), -1);
+            sqlite_error(ctx, "set_attr", "expected 2 arguments");
             return;
         }
 
@@ -160,7 +152,11 @@ pub(crate) extern "C" fn ffi_sec_set_attr(
         let val = sqlite3_value_text(*argv.add(1));
 
         if key.is_null() || val.is_null() {
-            sqlite3_result_error(ctx, c"NULL argument".as_ptr(), -1);
+            sqlite_error(ctx, "set_attr", "NULL argument 1 'key'");
+            return;
+        }
+        if key.is_null() || val.is_null() {
+            sqlite_error(ctx, "set_attr", "NULL argument 2 'value'");
             return;
         }
 
@@ -172,7 +168,12 @@ pub(crate) extern "C" fn ffi_sec_set_attr(
         stack.current_mut().set_attr(&key, &val);
         set_context_stack(db_ptr, stack);
 
-        sqlite3_result_int(ctx, 1);
+        match views::bump_generation_raw(db_ptr) {
+            Ok(_) => sqlite3_result_int64(ctx, 1),
+            Err(e) => {
+                sqlite_error(ctx, "set_attr", e);
+            }
+        }
     }
 }
 
@@ -184,7 +185,13 @@ pub(crate) extern "C" fn ffi_sec_clear_context(
     unsafe {
         let db_ptr = sqlite3_context_db_handle(ctx) as usize;
         set_context_stack(db_ptr, context::ContextStack::default());
-        sqlite3_result_int(ctx, 1);
+
+        match views::bump_generation_raw(db_ptr) {
+            Ok(_) => sqlite3_result_int64(ctx, 1),
+            Err(e) => {
+                sqlite_error(ctx, "clear_context", e);
+            }
+        }
     }
 }
 
@@ -214,7 +221,13 @@ pub(crate) extern "C" fn ffi_sec_push_context(
 
         stack.push(name);
         set_context_stack(db_ptr, stack);
-        sqlite3_result_int(ctx, 1);
+
+        match views::bump_generation_raw(db_ptr) {
+            Ok(_) => sqlite3_result_int64(ctx, 1),
+            Err(e) => {
+                sqlite_error(ctx, "push_context", e);
+            }
+        }
     }
 }
 
@@ -227,11 +240,17 @@ pub(crate) extern "C" fn ffi_sec_pop_context(
         let db_ptr = sqlite3_context_db_handle(ctx) as usize;
         let mut stack = get_context_stack(db_ptr);
 
-        if stack.pop().is_some() {
-            set_context_stack(db_ptr, stack);
-            sqlite3_result_int(ctx, 1);
-        } else {
-            sqlite3_result_error(ctx, c"cannot pop base context".as_ptr(), -1);
+        if stack.pop().is_none() {
+            sqlite_error(ctx, "pop_context", "cannot pop base context");
+            return;
+        }
+        set_context_stack(db_ptr, stack);
+
+        match views::bump_generation_raw(db_ptr) {
+            Ok(_) => sqlite3_result_int64(ctx, 1),
+            Err(e) => {
+                sqlite_error(ctx, "pop_context", e);
+            }
         }
     }
 }
@@ -243,13 +262,13 @@ pub(crate) extern "C" fn ffi_sec_define_label(
 ) {
     unsafe {
         if argc != 1 {
-            sqlite3_result_error(ctx, c"expected 1 argument".as_ptr(), -1);
+            sqlite_error(ctx, "define_label", "expected 1 argument");
             return;
         }
 
         let expr_ptr = sqlite3_value_text(*argv);
         if expr_ptr.is_null() {
-            sqlite3_result_error(ctx, c"NULL argument".as_ptr(), -1);
+            sqlite_error(ctx, "define_label", "NULL argument 1 'expr'");
             return;
         }
 
@@ -257,14 +276,16 @@ pub(crate) extern "C" fn ffi_sec_define_label(
 
         // Validate parse
         if label::parse(&expr).is_err() {
-            sqlite3_result_error(ctx, c"invalid label expression".as_ptr(), -1);
+            sqlite_error(ctx, "define_label", "invalid label expression");
             return;
         }
 
         let db_ptr = sqlite3_context_db_handle(ctx) as usize;
         match label::define_label_raw(db_ptr, &expr) {
             Ok(id) => sqlite3_result_int64(ctx, id),
-            Err(_) => sqlite3_result_error(ctx, c"failed to define label".as_ptr(), -1),
+            Err(e) => {
+                sqlite_error(ctx, "define_label", e);
+            }
         }
     }
 }
@@ -276,7 +297,7 @@ pub(crate) extern "C" fn ffi_sec_row_visible(
 ) {
     unsafe {
         if argc != 1 {
-            sqlite3_result_error(ctx, c"expected 1 argument".as_ptr(), -1);
+            sqlite_error(ctx, "row_visible", "expected 1 argument");
             return;
         }
 
@@ -291,8 +312,14 @@ pub(crate) extern "C" fn ffi_sec_row_visible(
         let visible = match label_id {
             None => true,
             Some(id) => {
-                let ctx = context::effective_context(db_ptr);
-                label::evaluate_by_id(db_ptr, id, &ctx).unwrap_or(false)
+                let sec_ctx = context::effective_context(db_ptr);
+                match label::evaluate_by_id(db_ptr, id, &sec_ctx) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        sqlite_error(ctx, "row_visible", e);
+                        return;
+                    }
+                }
             }
         };
 
@@ -309,7 +336,9 @@ pub(crate) extern "C" fn ffi_sec_refresh_views(
         let db_ptr = sqlite3_context_db_handle(ctx) as usize;
         match views::refresh_views_raw(db_ptr) {
             Ok(_) => sqlite3_result_int(ctx, 1),
-            Err(_) => sqlite3_result_error(ctx, c"failed to refresh views".as_ptr(), -1),
+            Err(e) => {
+                sqlite_error(ctx, "refresh_views", e);
+            }
         }
     }
 }
@@ -321,7 +350,7 @@ pub(crate) extern "C" fn ffi_sec_register_table(
 ) {
     unsafe {
         if argc != 5 {
-            sqlite3_result_error(ctx, c"expected 5 arguments".as_ptr(), -1);
+            sqlite_error(ctx, "register_table", "expected 5 arguments");
             return;
         }
 
@@ -334,20 +363,22 @@ pub(crate) extern "C" fn ffi_sec_register_table(
         } else {
             Some(sqlite3_value_int64(*argv.add(3)))
         };
-
-        let insert_policy_ptr = sqlite3_value_text(*argv.add(4));
-        let insert_policy = if insert_policy_ptr.is_null() {
+        let insert_label_id = if sqlite3_value_type(*argv.add(4)) == SQLITE_NULL {
             None
         } else {
-            Some(
-                CStr::from_ptr(insert_policy_ptr as *const c_char)
-                    .to_string_lossy()
-                    .to_string(),
-            )
+            Some(sqlite3_value_int64(*argv.add(4)))
         };
 
-        if logical_ptr.is_null() || physical_ptr.is_null() || row_col_ptr.is_null() {
-            sqlite3_result_error(ctx, c"NULL argument".as_ptr(), -1);
+        if logical_ptr.is_null() {
+            sqlite_error(ctx, "register_table", "NULL argument 1 'logical'");
+            return;
+        }
+        if physical_ptr.is_null() {
+            sqlite_error(ctx, "register_table", "NULL argument 2 ''physical'");
+            return;
+        }
+        if row_col_ptr.is_null() {
+            sqlite_error(ctx, "register_table", "NULL argument 3 'row_label_col'");
             return;
         }
 
@@ -362,38 +393,12 @@ pub(crate) extern "C" fn ffi_sec_register_table(
             &physical,
             &row_col,
             table_label_id,
-            insert_policy,
+            insert_label_id,
         ) {
             Ok(_) => sqlite3_result_int(ctx, 1),
-            Err(_) => sqlite3_result_error(ctx, c"failed to register table".as_ptr(), -1),
-        }
-    }
-}
-
-pub(crate) extern "C" fn ffi_sec_evaluate_insert_policy(
-    ctx: *mut sqlite3_context,
-    argc: c_int,
-    argv: *mut *mut sqlite3_value,
-) {
-    unsafe {
-        if argc != 1 {
-            sqlite3_result_error(ctx, c"expected 1 argument".as_ptr(), -1);
-            return;
-        }
-
-        let logical_ptr = sqlite3_value_text(*argv);
-        if logical_ptr.is_null() {
-            sqlite3_result_error(ctx, c"NULL table name".as_ptr(), -1);
-            return;
-        }
-
-        let logical = CStr::from_ptr(logical_ptr as *const c_char).to_string_lossy();
-        let db_ptr = sqlite3_context_db_handle(ctx) as usize;
-        let label_id = sec_evaluate_insert_policy_raw(&logical, db_ptr);
-
-        match label_id {
-            Some(id) => sqlite3_result_int64(ctx, id),
-            None => sqlite3_result_int64(ctx, 1), // fallback
+            Err(e) => {
+                sqlite_error(ctx, "register_table", e);
+            }
         }
     }
 }

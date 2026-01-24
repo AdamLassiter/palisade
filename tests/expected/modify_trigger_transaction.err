@@ -1,1 +1,1 @@
-Runtime error near line 7: failed to register table
+Runtime error near line 8: register_table: row label column 'missing_label' does not exist

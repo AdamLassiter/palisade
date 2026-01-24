@@ -14,7 +14,7 @@ INSERT INTO __sec_reports VALUES
 SELECT sec_define_label('true');
 SELECT sec_define_label('role=admin');
 
-SELECT sec_register_table('reports', '__sec_reports', 'row_label_id', 2);
+SELECT sec_register_table('reports', '__sec_reports', 'row_label_id', 2, NULL);
 
 .output /dev/null
 SELECT sec_clear_context();

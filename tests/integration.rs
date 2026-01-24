@@ -21,7 +21,7 @@ fn extension_path() -> PathBuf {
 }
 
 /// Run a single .sql test and compare output.
-fn run_test_case(name: String) -> bool {
+fn run_test_case(name: &str) -> bool {
     let base_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let case_dir = base_dir.join("tests/cases");
     let expected_dir = base_dir.join("tests/expected");
@@ -57,8 +57,7 @@ fn run_test_case(name: String) -> bool {
         lib_path.display()
     );
 
-    let expected_output =
-        fs::read_to_string(expected_path).expect("could not read expected file");
+    let expected_output = fs::read_to_string(expected_path).expect("could not read expected file");
     let sql_content = fs::read_to_string(&sql_path).expect("could not read SQL test case file");
 
     // Feed script via stdin
@@ -171,8 +170,13 @@ fn test_cases() -> Vec<String> {
 #[test]
 fn run_all_sql_tests() {
     let mut all_passed = true;
-    for case in test_cases() {
-        all_passed &= run_test_case(case);
+    let cases = test_cases();
+    println!("\trunning {} test cases", cases.len());
+    for case in cases {
+        let result = run_test_case(&case);
+        let msg = if result { "ok" } else { "fail" };
+        println!("\tcase {case} ... {msg}");
+        all_passed &= result;
     }
     assert!(all_passed, "Some test cases failed");
 }

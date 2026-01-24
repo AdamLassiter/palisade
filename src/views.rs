@@ -1,11 +1,10 @@
-use std::io::ErrorKind;
+use std::{io::ErrorKind, mem::forget};
 
 use rusqlite::{Connection, Error, Result};
 
 use crate::{
     context::{SecurityContext, effective_context},
-    get_context_stack,
-    label::{self, evaluate_label_expr},
+    label,
 };
 
 #[derive(Debug)]
@@ -14,7 +13,7 @@ pub struct SecTable {
     physical_name: String,
     row_label_col: String,
     table_label_id: Option<i64>,
-    insert_policy_expr: Option<String>,
+    insert_label_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -42,32 +41,38 @@ pub fn register_table(
     physical: &str,
     row_label_col: &str,
     table_label_id: Option<i64>,
-    insert_policy: Option<String>,
+    insert_label_id: Option<i64>,
 ) -> Result<()> {
     // 1. Physical table exists (implicit via PRAGMA failure)
     let cols = get_physical_columns(conn, physical)?;
 
     // 2. Row label column exists
     if !cols.iter().any(|c| c == row_label_col) {
-        return Err(invalid("row label column does not exist"));
+        return Err(invalid(format!(
+            "row label column '{row_label_col}' does not exist"
+        )));
     }
 
     // 3. Primary key exists
     let pk_cols = get_primary_key_columns(conn, physical)?;
     if pk_cols.is_empty() {
-        return Err(invalid("secured table must have a PRIMARY KEY"));
+        return Err(invalid(format!(
+            "secured table '{physical}' must have a PRIMARY KEY"
+        )));
     }
 
     // 4. Reject WITHOUT ROWID tables
     if is_without_rowid(conn, physical)? {
-        return Err(invalid("WITHOUT ROWID tables are not supported"));
+        return Err(invalid(format!(
+            "WITHOUT ROWID table '{physical}' is not supported"
+        )));
     }
 
     // 5. Column name sanity
     let mut seen = std::collections::HashSet::new();
     for col in &cols {
         if !seen.insert(col.to_lowercase()) {
-            return Err(invalid("duplicate column names detected"));
+            return Err(invalid(format!("duplicate column name '{col}' detected")));
         }
     }
 
@@ -76,15 +81,15 @@ pub fn register_table(
     conn.execute(
         r#"
         INSERT OR REPLACE INTO sec_tables
-        (logical_name, physical_name, row_label_col, table_label_id, insert_policy_expr)
-        VALUES (?1, ?2, ?3, ?4)
+        (logical_name, physical_name, row_label_col, table_label_id, insert_label_id)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
         rusqlite::params![
             logical,
             physical,
             row_label_col,
             table_label_id,
-            insert_policy
+            insert_label_id
         ],
     )?;
 
@@ -108,7 +113,7 @@ pub fn register_table_raw(
     physical: &str,
     row_label_col: &str,
     table_label_id: Option<i64>,
-    insert_policy: Option<String>,
+    insert_label_id: Option<i64>,
 ) -> Result<()> {
     let conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
     let result = register_table(
@@ -117,9 +122,9 @@ pub fn register_table_raw(
         physical,
         row_label_col,
         table_label_id,
-        insert_policy,
+        insert_label_id,
     );
-    std::mem::forget(conn);
+    forget(conn);
     result
 }
 
@@ -138,6 +143,27 @@ fn annotate(err: Error, table: &str) -> Error {
     ))))
 }
 
+pub fn bump_generation(conn: &mut Connection) -> Result<()> {
+    conn.execute(
+        r#"
+        UPDATE sec_meta
+        SET value = value + 1
+        WHERE key = 'generation';
+        "#,
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn bump_generation_raw(db_ptr: usize) -> Result<()> {
+    let mut conn = unsafe { Connection::from_handle(db_ptr as *mut _)? };
+
+    let result = bump_generation(&mut conn);
+
+    forget(conn);
+    result
+}
+
 /// Refresh views using Connection reference
 pub fn refresh_views(conn: &mut Connection, ctx: &SecurityContext) -> Result<()> {
     let tx = conn.transaction()?; // BEGIN
@@ -147,6 +173,17 @@ pub fn refresh_views(conn: &mut Connection, ctx: &SecurityContext) -> Result<()>
     for table in tables {
         refresh_single_view(&tx, &table, ctx).map_err(|e| annotate(e, &table.logical_name))?;
     }
+
+    tx.execute_batch(
+        r#"
+        INSERT OR REPLACE INTO sec_meta (key, value)
+        VALUES ('last_refresh_generation',
+            (SELECT value FROM sec_meta WHERE key = 'generation'));
+
+        INSERT OR REPLACE INTO sec_meta (key, value)
+        VALUES ('views_initialized', 1);
+        "#,
+    )?;
 
     tx.commit()?; // COMMIT
     Ok(())
@@ -160,13 +197,13 @@ pub fn refresh_views_raw(db_ptr: usize) -> Result<()> {
 
     let result = refresh_views(&mut conn, &ctx);
 
-    std::mem::forget(conn);
+    forget(conn);
     result
 }
 
 fn load_sec_tables(conn: &Connection) -> Result<Vec<SecTable>> {
     let mut stmt = conn.prepare(
-        "SELECT logical_name, physical_name, row_label_col, table_label_id FROM sec_tables",
+        "SELECT logical_name, physical_name, row_label_col, table_label_id, insert_label_id FROM sec_tables",
     )?;
 
     let tables = stmt
@@ -176,7 +213,7 @@ fn load_sec_tables(conn: &Connection) -> Result<Vec<SecTable>> {
                 physical_name: row.get(1)?,
                 row_label_col: row.get(2)?,
                 table_label_id: row.get(3)?,
-                insert_policy_expr: row.get(4)?,
+                insert_label_id: row.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -281,7 +318,7 @@ fn get_primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>
     Ok(pk_cols.into_iter().map(|(_, name)| name).collect())
 }
 
-fn invalid(msg: &str) -> Error {
+fn invalid<T: ToString>(msg: T) -> Error {
     Error::UserFunctionError(Box::new(std::io::Error::new(
         ErrorKind::InvalidInput,
         msg.to_string(),
@@ -312,13 +349,29 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         .collect::<Vec<_>>()
         .join(", ");
 
-    let row_label_assignment = if table.insert_policy_expr.is_some() {
-        // Use sec_evaluate_insert_policy(logical_name) to compute label
-        // fallback to table_label_id or 1
+    let refesh_guard = r#"
+        SELECT CASE
+            WHEN (SELECT value FROM sec_meta WHERE key = 'generation')
+               != (SELECT value FROM sec_meta WHERE key = 'last_refresh_generation')
+            THEN RAISE(ABORT, 'security views are stale: call sec_refresh_views()')
+        END;
+        "#;
+
+    let row_label_assignment = if table.insert_label_id.is_some() {
         format!(
             r#"COALESCE(
-                sec_evaluate_insert_policy('{logical}'),
-                (SELECT table_label_id FROM sec_tables WHERE logical_name = '{logical}'),
+                (
+                    SELECT insert_label_id
+                    FROM sec_tables
+                    WHERE logical_name = '{logical}'
+                      AND insert_label_id IS NOT NULL
+                      AND sec_row_visible(insert_label_id)
+                ),
+                (
+                    SELECT table_label_id
+                    FROM sec_tables
+                    WHERE logical_name = '{logical}'
+                ),
                 1
             )"#
         )
@@ -356,6 +409,7 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         CREATE TEMP TRIGGER "{logical}_sec_ins"
         INSTEAD OF INSERT ON "{logical}"
         BEGIN
+            {refesh_guard}
             {insert_guard}
             {visibility_guard}
 
@@ -377,7 +431,9 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
     let pk_cols = get_primary_key_columns(conn, physical)?;
 
     if pk_cols.is_empty() {
-        return Err(invalid("secured table must have a PRIMARY KEY"));
+        return Err(invalid(format!(
+            "secured table '{physical}' must have a PRIMARY KEY"
+        )));
     }
 
     let pk_where_old = {
@@ -419,6 +475,7 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         CREATE TEMP TRIGGER "{logical}_sec_upd"
         INSTEAD OF UPDATE ON "{logical}"
         BEGIN
+            {refesh_guard}
             {pk_guard}
             {label_guard}
 
@@ -436,6 +493,8 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         CREATE TEMP TRIGGER "{logical}_sec_del"
         INSTEAD OF DELETE ON "{logical}"
         BEGIN
+            {refesh_guard}
+
             DELETE FROM "{physical}"
             WHERE {pk_where_old}
               AND sec_row_visible("{row_label_col}");
@@ -453,28 +512,4 @@ fn create_write_triggers(conn: &Connection, table: &SecTable, visible_cols: &[&s
         .map_err(|e| trigger_err(e, logical, "DELETE"))?;
 
     Ok(())
-}
-
-pub fn sec_evaluate_insert_policy_raw(logical: &str, db_ptr: usize) -> Option<i64> {
-    let conn = unsafe { Connection::from_handle(db_ptr as *mut _).unwrap() };
-
-    let table: Option<SecTable> = load_sec_tables(&conn)
-        .ok()?
-        .into_iter()
-        .find(|table| table.logical_name == logical);
-
-    let label_id = if let Some(t) = table {
-        if let Some(policy_expr) = t.insert_policy_expr {
-            // Evaluate policy expression against current context stack
-            let stack = get_context_stack(db_ptr);
-            evaluate_label_expr(&policy_expr, stack.effective())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    std::mem::forget(conn);
-    label_id
 }

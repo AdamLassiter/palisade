@@ -18,7 +18,7 @@ SELECT sec_define_label('true');          -- id = 1
 SELECT sec_define_label('role=admin');    -- id = 2
 
 -- Register table
-SELECT sec_register_table('docs', '__sec_docs', 'row_label_id', NULL);
+SELECT sec_register_table('docs', '__sec_docs', 'row_label_id', NULL, NULL);
 
 .output /dev/null
 SELECT sec_clear_context();

@@ -12,7 +12,7 @@ INSERT INTO __sec_inventory VALUES
 
 .load ./target/debug/libsqlsec
 SELECT sec_define_label('true'); -- everyone
-SELECT sec_register_table('inventory', '__sec_inventory', 'row_label_id', NULL);
+SELECT sec_register_table('inventory', '__sec_inventory', 'row_label_id', NULL, NULL);
 
 .output /dev/null
 SELECT sec_clear_context();

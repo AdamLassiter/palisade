@@ -108,7 +108,8 @@ SELECT sec_register_table(
     'employees',        -- logical view name
     '__sec_employees',  -- physical table name
     'row_label_id',     -- row label column
-    NULL                -- optional table-level label
+    NULL,               -- optional table-level label
+    NULL                -- optional insert label
 );
 ```
 
@@ -147,7 +148,8 @@ SELECT sec_register_table(
     'reports',
     '__sec_reports',
     'row_label_id',
-    sec_define_label('role=admin')
+    sec_define_label('role=admin'),
+    NULL
 );
 ```
 

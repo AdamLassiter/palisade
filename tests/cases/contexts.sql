@@ -9,7 +9,7 @@ INSERT INTO __sec_docs VALUES (1, 1, 'Public'), (2, 2, 'Admin Only');
 .load ./target/debug/libsqlsec
 SELECT sec_define_label('true');
 SELECT sec_define_label('role=admin');
-SELECT sec_register_table('docs', '__sec_docs', 'row_label_id', NULL);
+SELECT sec_register_table('docs', '__sec_docs', 'row_label_id', NULL, NULL);
 
 .output /dev/null
 SELECT sec_clear_context();

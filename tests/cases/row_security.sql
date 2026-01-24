@@ -19,7 +19,7 @@ SELECT sec_define_label('true');
 SELECT sec_define_label('role=admin');
 SELECT sec_define_label('(role=admin|role=auditor)');
 
-SELECT sec_register_table('customers', '__sec_customers', 'row_label_id', NULL);
+SELECT sec_register_table('customers', '__sec_customers', 'row_label_id', NULL, NULL);
 
 UPDATE sec_columns SET label_id = sec_define_label('role=admin')
   WHERE logical_table = 'customers' AND column_name = 'ssn';

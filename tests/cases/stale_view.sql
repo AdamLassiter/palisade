@@ -20,6 +20,7 @@ SELECT sec_define_label('role=manager');
 SELECT sec_define_label('role=finance');
 
 SELECT sec_register_table('employees', '__sec_employees', 'row_label_id', NULL, NULL);
+SELECT sec_refresh_views();
 
 UPDATE sec_columns SET label_id = sec_define_label('role=manager') WHERE column_name = 'salary';
 UPDATE sec_columns SET label_id = sec_define_label('role=finance') WHERE column_name = 'department';
@@ -27,29 +28,8 @@ UPDATE sec_columns SET label_id = sec_define_label('role=finance') WHERE column_
 .output /dev/null
 SELECT sec_clear_context();
 SELECT sec_set_attr('role', 'user');
-SELECT sec_refresh_views();
 .output stdout
 
 .print ------------------------------------------------------------
 .print [Regular user]
-SELECT * FROM employees;
-
-.output /dev/null
-SELECT sec_clear_context();
-SELECT sec_set_attr('role', 'finance');
-SELECT sec_refresh_views();
-.output stdout
-
-.print ------------------------------------------------------------
-.print [Finance]
-SELECT * FROM employees;
-
-.output /dev/null
-SELECT sec_clear_context();
-SELECT sec_set_attr('role', 'manager');
-SELECT sec_refresh_views();
-.output stdout
-
-.print ------------------------------------------------------------
-.print [Manager]
 SELECT * FROM employees;

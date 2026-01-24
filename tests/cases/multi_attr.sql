@@ -9,7 +9,7 @@ CREATE TABLE __sec_secrets (
 .load ./target/debug/libsqlsec
 
 SELECT sec_define_label('role=admin&team=finance');
-SELECT sec_register_table('secrets', '__sec_secrets', 'row_label_id', NULL);
+SELECT sec_register_table('secrets', '__sec_secrets', 'row_label_id', NULL, NULL);
 
 INSERT INTO __sec_secrets VALUES (1, 1, 'top-secret');
 

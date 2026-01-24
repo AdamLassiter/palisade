@@ -1,0 +1,6 @@
+------------------------------------------------------------
+[Regular user]
+department   id  name     row_label_id  salary
+-----------  --  -------  ------------  ------
+Sales        1   Alice    1             50000 
+Engineering  3   Charlie  1             60000

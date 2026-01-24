@@ -18,12 +18,13 @@ SELECT sec_register_table(
     '__sec_employees',
     'row_label_id',
     NULL,
-    'role=manager'        -- insert policy expression
+    3 -- insert policy expression
 );
 .output stdout
 
 .output /dev/null
 SELECT sec_clear_context();
+SELECT sec_refresh_views();
 .output stdout
 
 .print ------------------------------------------------------------
@@ -35,6 +36,7 @@ SELECT * FROM employees ORDER BY id;
 SELECT sec_clear_context();
 SELECT sec_push_context();
 SELECT sec_set_attr('role', 'manager');
+SELECT sec_refresh_views();
 .output stdout
 
 .print ------------------------------------------------------------
@@ -45,10 +47,16 @@ SELECT * FROM employees ORDER BY id;
 .output /dev/null
 SELECT sec_clear_context();
 SELECT sec_push_context();
+SELECT sec_set_attr('role', 'staff');
+SELECT sec_refresh_views();
 .output stdout
 
 .print ------------------------------------------------------------
 .print [Insert with context role=staff (policy ignored)]
-SELECT sec_set_attr('role', 'staff');
 INSERT INTO employees (name) VALUES ('Charlie');
+SELECT * FROM employees ORDER BY id;
+
+.print ------------------------------------------------------------
+.print [Insert with label forgery attempt (policy enforced)]
+INSERT INTO employees (name, row_label_id) VALUES ('Dave', 4);
 SELECT * FROM employees ORDER BY id;
