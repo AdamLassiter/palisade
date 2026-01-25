@@ -21,7 +21,7 @@ pub(crate) unsafe fn init_extension_ffi(db: *mut sqlite3) -> Result<()> {
             row_label_col  TEXT NOT NULL,
             table_label_id INTEGER REFERENCES sec_labels(id),
             insert_label_id INTEGER REFERENCES sec_labels(id),
-            allow_explicit_label INTEGER DEFAULT 1
+            allow_implicit_label INTEGER DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS sec_columns (

@@ -109,7 +109,7 @@ SELECT sec_register_table(
     '__sec_employees',  -- physical table name
     'row_label_id',     -- row label column
     NULL,               -- optional table-level label
-    NULL                -- optional insert label
+    NULL                -- optional insert-permission label
 );
 ```
 
@@ -173,6 +173,20 @@ SELECT sec_clear_context();
 ```sql
 SELECT sec_set_attr('role', 'admin');
 SELECT sec_set_attr('team', 'finance');
+```
+
+### Push/Pop a context scope
+
+```sql
+SELECT sec_set_attr('role', 'user');
+-- role is user
+...
+SELECT sec_push_context();
+    SELECT sec_set_attr('role', 'admin');
+    -- role is admin
+    ...
+SELECT sec_pop_context();
+-- role is user again
 ```
 
 ### Refresh views
@@ -299,6 +313,7 @@ SELECT sec_set_attr('role', 'auditor');
 * Table-level visibility
 * Safe write support
 * Declarative access rules
+* Scoped context sets
 
 All implemented using:
 
