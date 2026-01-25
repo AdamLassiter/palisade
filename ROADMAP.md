@@ -6,35 +6,6 @@
 
 These make the system *correct*, predictable, and production-ready.
 
----
-
-### 5. Row label assignment policies
-
-Currently:
-
-* INSERT uses `COALESCE(NEW.row_label_id, 1)`
-
-Add:
-
-* Label assignment rules per table
-* Default label per table
-* Label derived from context
-
-Example:
-
-```sql
-SELECT sec_set_insert_policy(
-  'employees',
-  'role=manager'
-);
-```
-
-Why:
-
-> Prevents users from forging row labels.
-
----
-
 ### 6. UPDATE policies (beyond visibility)
 
 Add policies like:

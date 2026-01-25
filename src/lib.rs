@@ -1,20 +1,15 @@
 pub mod context;
+pub mod init;
 pub mod label;
 pub mod register;
 pub mod views;
 
 use std::{
-    collections::HashMap,
     ffi::{CString, c_char, c_int},
-    mem::forget,
     ptr,
 };
 
-use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use rusqlite::{
-    Connection,
-    Result,
     ffi::{
         SQLITE_ERROR,
         SQLITE_OK,
@@ -25,20 +20,7 @@ use rusqlite::{
     },
 };
 
-use crate::context::ContextStack;
-
-/// Global map: db handle address -> SecurityContext
-pub static CONTEXTS: Lazy<Mutex<HashMap<usize, ContextStack>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// Get or create context for a connection
-pub fn get_context_stack(db_ptr: usize) -> ContextStack {
-    CONTEXTS.lock().entry(db_ptr).or_default().clone()
-}
-
-pub fn set_context_stack(db_ptr: usize, ctx: ContextStack) {
-    CONTEXTS.lock().insert(db_ptr, ctx);
-}
+use crate::init::init_extension_ffi;
 
 /// Initialize the extension entry point for SQLite.
 ///
@@ -87,50 +69,4 @@ fn set_err_message(pz_err_msg: *mut *mut c_char, msg: &str) {
         ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buf, bytes.len());
         *pz_err_msg = buf;
     }
-}
-
-/// Initialize the database objects when extension loads via FFI.
-unsafe fn init_extension_ffi(db: *mut sqlite3) -> Result<()> {
-    let conn = unsafe { Connection::from_handle(db) }?;
-
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS sec_labels (
-            id   INTEGER PRIMARY KEY,
-            expr TEXT NOT NULL UNIQUE
-        );
-
-        CREATE TABLE IF NOT EXISTS sec_tables (
-            logical_name   TEXT PRIMARY KEY,
-            physical_name  TEXT NOT NULL,
-            row_label_col  TEXT NOT NULL,
-            table_label_id INTEGER REFERENCES sec_labels(id),
-            insert_label_id INTEGER REFERENCES sec_labels(id),
-            allow_explicit_label INTEGER DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS sec_columns (
-            logical_table TEXT NOT NULL,
-            column_name   TEXT NOT NULL,
-            label_id      INTEGER REFERENCES sec_labels(id),
-            PRIMARY KEY (logical_table, column_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS sec_meta (
-            key   TEXT PRIMARY KEY,
-            value INTEGER
-        );
-        INSERT OR IGNORE INTO sec_meta VALUES ('generation', 0);
-        INSERT OR IGNORE INTO sec_meta VALUES ('last_refresh_generation', 0);
-        INSERT OR IGNORE INTO sec_meta VALUES ('views_initialized', 0);
-        "#,
-    )?;
-
-    // Ensure we don’t close SQLite’s internal handle
-    forget(conn);
-
-    // Register scalar functions
-    register::register_functions_ffi(db);
-
-    Ok(())
 }
