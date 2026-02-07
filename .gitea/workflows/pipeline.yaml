@@ -1,0 +1,47 @@
+on: [push, pull_request]
+
+name: Continuous integration
+
+jobs:
+  cargo:
+    name: Cargo
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          # - stable
+          # - beta
+          - nightly
+    steps:
+      - name: Setup SQLite
+        run: |
+          wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip && unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
+          echo "$(pwd)/sqlite-tools" >> $GITEA_PATH
+
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy, rust-src
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace
+        run: cargo build --workspace --all-targets
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Run formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+  
+  markdown:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actionshub/markdownlint@v3.1.4
