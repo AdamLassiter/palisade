@@ -1,0 +1,11 @@
+[package]
+name = "sqlshim"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nix = { version = "0.30", features = ["ptrace", "signal", "fs"] }
+libc = "0.2"
