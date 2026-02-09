@@ -29,16 +29,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build workspace
-        run: cargo build --workspace --all-targets
+        run: ./cargow build
 
       - name: Run tests
-        run: cargo test --workspace
+        run: ./cargow test
 
       - name: Run formatting check
-        run: cargo fmt --all -- --check
+        run: ./cargow fmt --all -- --check
 
       - name: Run clippy lints
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: ./cargow clippy --workspace --all-targets -- -D warnings
   
   markdown:
     name: Markdown lint

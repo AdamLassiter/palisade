@@ -6,8 +6,10 @@ fn main() -> Result<()> {
     let conn = Connection::open(":memory:")?;
 
     // Load the sqlsec extension (assumes it's built and available)
-    // Comment out if testing shim rewriting only
-    // conn.load_extension("./libsqlsec", None)?;
+    unsafe {
+        conn.load_extension_enable()?;
+        conn.load_extension("../sqlsec/target/release/libsqlsec", None::<&str>)?;
+    }
 
     println!("--- Testing DEFINE LABEL ---");
     conn.execute_batch("DEFINE LABEL 'true';")?;
@@ -120,9 +122,7 @@ fn main() -> Result<()> {
     conn.execute_batch("IMPORT TENANT 'acme' FROM '/tmp/acme.sql';")?;
 
     println!("\nTemporal features:");
-    conn.execute_batch(
-        "CREATE TEMPORAL TABLE audit_log (id INTEGER PRIMARY KEY, event TEXT);",
-    )?;
+    conn.execute_batch("CREATE TEMPORAL TABLE audit_log (id INTEGER PRIMARY KEY, event TEXT);")?;
     conn.execute_batch("RESTORE audit_log TO '2026-01-01';")?;
 
     println!("\nCDC features:");
@@ -144,11 +144,9 @@ fn main() -> Result<()> {
     conn.execute_batch("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT);")?;
     conn.execute_batch("INSERT INTO test_table (id, name) VALUES (1, 'test');")?;
 
-    let name: String = conn.query_row(
-        "SELECT name FROM test_table WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
+    let name: String = conn.query_row("SELECT name FROM test_table WHERE id = 1", [], |row| {
+        row.get(0)
+    })?;
     assert_eq!(name, "test");
     println!("✓ Normal SQL passthrough works\n");
 

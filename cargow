@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+# Check if at least one argument (cargo command) is provided
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <cargo-command> [args...]"
+    exit 1
+fi
+
+CARGO_CMD=$1
+shift  # Remove the command from arguments, leaving optional args
+
+# Supported commands
+case "$CARGO_CMD" in
+    clean|build|test|fmt|clippy)
+        ;;
+    *)
+        echo "Unsupported cargo command: $CARGO_CMD"
+        echo "Supported commands: clean, build, test, fmt, clippy"
+        exit 1
+        ;;
+esac
+
+# Find all directories with Cargo.toml, including the root if present
+DIRS=$(find . -name Cargo.toml -exec dirname {} \; | sort -u)
+
+for dir in $DIRS; do
+    echo "🚀 Running 'cargo $CARGO_CMD $*' in $dir"
+    (
+        cd "$dir" || exit 1
+        cargo "$CARGO_CMD" "$@"
+    )
+    echo "✅ Finished 'cargo $CARGO_CMD' in $dir"
+done
