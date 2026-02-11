@@ -9,6 +9,7 @@ fn main() -> Result<()> {
     unsafe {
         conn.load_extension_enable()?;
         conn.load_extension("../sqlsec/target/release/libsqlsec", None::<&str>)?;
+        conn.load_extension_disable()?;
     }
 
     println!("--- Testing DEFINE LABEL ---");
@@ -76,9 +77,9 @@ fn main() -> Result<()> {
     conn.execute_batch("POP CONTEXT;")?;
     println!("✓ PUSH/POP CONTEXT processed\n");
 
-    println!("--- Testing REFRESH SECURITY VIEWS ---");
-    conn.execute_batch("REFRESH SECURITY VIEWS;")?;
-    println!("✓ REFRESH SECURITY VIEWS processed\n");
+    println!("--- Testing REFRESH SECURE VIEWS ---");
+    conn.execute_batch("REFRESH SECURE VIEWS;")?;
+    println!("✓ REFRESH SECURE VIEWS processed\n");
 
     println!("--- Testing REGISTER SECURE TABLE ---");
     conn.execute_batch(
@@ -114,26 +115,6 @@ fn main() -> Result<()> {
     println!("✓ SET COLUMN SECURITY (read+update) processed\n");
 
     println!("--- Testing Stub Features (should show warnings) ---");
-
-    println!("\nTenant features:");
-    conn.execute_batch("CREATE TENANT TABLE orders (id INTEGER PRIMARY KEY, amount REAL);")?;
-    conn.execute_batch("SET TENANT = 'acme';")?;
-    conn.execute_batch("EXPORT TENANT 'acme';")?;
-    conn.execute_batch("IMPORT TENANT 'acme' FROM '/tmp/acme.sql';")?;
-
-    println!("\nTemporal features:");
-    conn.execute_batch("CREATE TEMPORAL TABLE audit_log (id INTEGER PRIMARY KEY, event TEXT);")?;
-    conn.execute_batch("RESTORE audit_log TO '2026-01-01';")?;
-
-    println!("\nCDC features:");
-    conn.execute_batch("CREATE CHANGEFEED orders_feed ON orders;")?;
-    conn.execute_batch("CREATE CHANGEFEED filtered_feed ON orders WHERE amount > 100;")?;
-    conn.execute_batch("DROP CHANGEFEED orders_feed;")?;
-
-    println!("\nEncryption features:");
-    conn.execute_batch("ENCRYPT COLUMN users.ssn WITH KEY('pii_key');")?;
-    conn.execute_batch("ROTATE ENCRYPTION KEY;")?;
-    conn.execute_batch("ROTATE ENCRYPTION KEY FOR users;")?;
 
     println!("\nAudit features:");
     conn.execute_batch("ENABLE AUDIT ON users;")?;

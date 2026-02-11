@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 [dependencies]
 libc = "0.2"
 regex = "1"
+sqlparser = "0.60"
