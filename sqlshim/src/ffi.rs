@@ -2,7 +2,16 @@ use std::ffi::{CStr, CString};
 
 use libc::{RTLD_NEXT, c_char, c_int, c_void};
 
-use crate::{Exec, ExecCallback, PrepareV2, PrepareV3, Sqlite3, SqliteStmt, debug, rewrite};
+use crate::{
+    Exec,
+    ExecCallback,
+    PrepareV2,
+    PrepareV3,
+    Sqlite3,
+    SqliteStmt,
+    debug,
+    parse_and_rewrite,
+};
 
 pub(crate) unsafe fn resolve_prepare_v2() -> PrepareV2 {
     let cname = CString::new("sqlite3_prepare_v2").unwrap();
@@ -42,7 +51,7 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
     let real = unsafe { resolve_prepare_v2() };
     let sql = unsafe { CStr::from_ptr(z_sql).to_string_lossy() };
 
-    if let Some(new_sql) = rewrite(&sql) {
+    if let Some(new_sql) = parse_and_rewrite(&sql) {
         if debug() {
             eprintln!("sqlshim: prepare_v2 rewrite!");
             eprintln!("  original: {}", sql.trim());
@@ -67,7 +76,7 @@ pub unsafe extern "C" fn sqlite3_prepare_v3(
     let real = unsafe { resolve_prepare_v3() };
     let sql = unsafe { CStr::from_ptr(z_sql).to_string_lossy() };
 
-    if let Some(new_sql) = rewrite(&sql) {
+    if let Some(new_sql) = parse_and_rewrite(&sql) {
         if debug() {
             eprintln!("sqlshim: prepare_v3 rewrite!");
             eprintln!("  original: {}", sql.trim());
@@ -93,7 +102,7 @@ pub unsafe extern "C" fn sqlite3_exec(
 
     // sqlite3_exec can contain multiple statements - we need to handle each
     // For now, try to rewrite the whole thing if it's a single custom statement
-    if let Some(new_sql) = rewrite(&sql_str) {
+    if let Some(new_sql) = parse_and_rewrite(&sql_str) {
         if debug() {
             eprintln!("sqlshim: exec rewrite!");
             eprintln!("  original: {}", sql_str.trim());

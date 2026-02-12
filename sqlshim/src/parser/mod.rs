@@ -9,7 +9,7 @@ use sqlparser::{
     ast::{Ident, Statement},
     dialect::{Dialect, GenericDialect, keywords::Keyword},
     parser::{Parser, ParserError},
-    tokenizer::Token,
+    tokenizer::{Token, TokenWithSpan},
 };
 
 use crate::statement::*;
@@ -33,6 +33,22 @@ impl Dialect for SecureDialect {
 /// Wraps sqlparser's Parser for custom statement parsing
 pub struct CustomParser {
     parser: Parser<'static>,
+}
+
+/// Format a token with its span for error messages
+fn format_token_with_span(token: &TokenWithSpan) -> String {
+    format!(
+        "'{}' at line {}, column {}",
+        token.token, token.span.start.line, token.span.start.column
+    )
+}
+
+/// Create a parser error with span context
+fn error_at_span(message: &str, token: &TokenWithSpan) -> ParserError {
+    ParserError::ParserError(format!(
+        "{} (at line {}, column {})",
+        message, token.span.start.line, token.span.start.column
+    ))
 }
 
 impl CustomParser {
@@ -86,8 +102,13 @@ impl CustomParser {
             return self.parse_define_level().map(Some);
         }
 
-        Err(ParserError::ParserError(
-            "Expected LABEL or LEVEL after DEFINE".into(),
+        let token = self.parser.peek_token();
+        Err(error_at_span(
+            &format!(
+                "Expected LABEL or LEVEL after DEFINE, got '{}'",
+                token.token
+            ),
+            &token,
         ))
     }
 
@@ -205,13 +226,14 @@ impl CustomParser {
 
     fn parse_literal_int(&mut self) -> Result<i64, ParserError> {
         let token = self.parser.next_token();
-        match token.token {
-            Token::Number(s, _) => s
-                .parse()
-                .map_err(|e| ParserError::ParserError(format!("Invalid integer: {e}"))),
-            _ => Err(ParserError::ParserError(format!(
-                "Expected integer, got {token}"
-            ))),
+        match &token.token {
+            Token::Number(s, _) => s.parse().map_err(|e| {
+                error_at_span(&format!("Invalid integer '{}': {}", s, e), &token)
+            }),
+            _ => Err(error_at_span(
+                &format!("Expected integer, got '{}'", token.token),
+                &token,
+            )),
         }
     }
 
@@ -219,9 +241,10 @@ impl CustomParser {
         let token = self.parser.next_token();
         match &token.token {
             Token::Word(w) if w.value.to_uppercase() == word.to_uppercase() => Ok(()),
-            _ => Err(ParserError::ParserError(format!(
-                "Expected {word}, got {token}"
-            ))),
+            _ => Err(error_at_span(
+                &format!("Expected '{}', got '{}'", word, token.token),
+                &token,
+            )),
         }
     }
 
@@ -247,12 +270,15 @@ impl CustomParser {
                 "UPDATE" => Ok(PolicyOperation::Update),
                 "DELETE" => Ok(PolicyOperation::Delete),
                 "ALL" => Ok(PolicyOperation::All),
-                _ => Err(ParserError::ParserError(format!(
-                    "Unknown operation: {}",
-                    w.value
-                ))),
+                _ => Err(error_at_span(
+                    &format!("Unknown operation '{}'", w.value),
+                    &token,
+                )),
             },
-            _ => Err(ParserError::ParserError("Expected operation".into())),
+            _ => Err(error_at_span(
+                &format!("Expected operation, got '{}'", token.token),
+                &token,
+            )),
         }
     }
 
@@ -277,7 +303,10 @@ impl CustomParser {
                 Token::LParen => depth += 1,
                 Token::RParen => depth -= 1,
                 Token::EOF => {
-                    return Err(ParserError::ParserError(format!("Expected {end}")));
+                    return Err(error_at_span(
+                        &format!("Unexpected end of input, expected '{}'", end),
+                        &token,
+                    ));
                 }
                 _ => {}
             }

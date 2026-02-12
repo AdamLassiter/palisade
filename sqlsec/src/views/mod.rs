@@ -28,6 +28,13 @@ fn get_physical_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     let cols = stmt
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<Vec<_>>>()?;
+
+    if cols.is_empty() {
+        return Err(invalid(format!(
+            "table '{table}' does not exist",
+        )));
+    }
+
     Ok(cols)
 }
 

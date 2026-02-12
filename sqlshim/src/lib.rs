@@ -49,7 +49,7 @@ fn disabled() -> bool {
     std::env::var("SQLSHIM_DISABLE").is_ok()
 }
 
-fn rewrite(sql: &str) -> Option<String> {
+fn parse_and_rewrite(sql: &str) -> Option<String> {
     if disabled() {
         return None;
     }
@@ -71,6 +71,7 @@ fn rewrite(sql: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::statement::*;
 
     #[test]
     fn test_parse_define_label() {
@@ -105,7 +106,7 @@ mod tests {
                 assert_eq!(p.name, "test_pol");
                 assert_eq!(p.table, "users");
                 assert_eq!(p.operation, Some(PolicyOperation::Select));
-                assert_eq!(p.using_expr, "role='admin'");
+                assert_eq!(p.using_expr, "role = 'admin'");
             }
             _ => panic!("Expected CreatePolicy"),
         }
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn test_rewrite_define_label() {
         let sql = "DEFINE LABEL 'role=admin';";
-        let rewritten = rewrite(sql).unwrap();
+        let rewritten = parse_and_rewrite(sql).unwrap();
         assert!(rewritten.contains("sec_define_label"));
         assert!(rewritten.contains("role=admin"));
     }

@@ -31,7 +31,8 @@ pub fn register_table(
     // 2. Row label column exists
     if !cols.iter().any(|c| c == row_label_col) {
         return Err(invalid(format!(
-            "row label column '{row_label_col}' does not exist"
+            "row label column '{row_label_col}' does not exist, candidates are: {}",
+            cols.join(", ")
         )));
     }
 

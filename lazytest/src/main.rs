@@ -84,6 +84,14 @@ fn main() -> Result<()> {
     println!("--- Testing REGISTER SECURE TABLE ---");
     conn.execute_batch(
         r#"
+        CREATE TABLE __sec_employees (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            title TEXT,
+            salary INTEGER,
+            department TEXT,
+            row_label_id INTEGER
+        );
         REGISTER SECURE TABLE employees
         ON __sec_employees
         WITH ROW LABEL row_label_id;
@@ -93,6 +101,11 @@ fn main() -> Result<()> {
 
     conn.execute_batch(
         r#"
+        CREATE TABLE __sec_documents (
+            id INTEGER PRIMARY KEY,
+            content TEXT,
+            row_label_id INTEGER
+        );
         REGISTER SECURE TABLE documents
         ON __sec_documents
         WITH ROW LABEL row_label_id
@@ -101,6 +114,17 @@ fn main() -> Result<()> {
         "#,
     )?;
     println!("✓ REGISTER SECURE TABLE (with labels) processed\n");
+
+    println!("--- Testing CREATE SECURE VIEW ---");
+    conn.execute_batch(
+        r#"
+        CREATE SECURE VIEW employee_view AS
+        SELECT id, name, salary
+        FROM employees
+        WHERE department = 'finance';
+        "#,
+    )?;
+    println!("✓ CREATE SECURE VIEW (basic) processed\n");
 
     println!("--- Testing SET COLUMN SECURITY ---");
     conn.execute_batch("SET COLUMN SECURITY employees.salary READ 'role=manager';")?;
