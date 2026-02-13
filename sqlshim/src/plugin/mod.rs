@@ -32,6 +32,7 @@ pub static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(|| PluginRe
         Box::new(define_level::DefineLevelPlugin),
         Box::new(drop_policy::DropPolicyPlugin),
         Box::new(enable_audit::EnableAuditPlugin),
+        Box::new(explain_policy::ExplainPolicyPlugin),
         Box::new(pop_context::PopContextPlugin),
         Box::new(push_context::PushContextPlugin),
         Box::new(refresh_secure_views::RefreshSecureViewsPlugin),
