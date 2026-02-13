@@ -23,6 +23,7 @@ use sqlparser::{
 use crate::statement::CustomStatement;
 
 pub static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(|| PluginRegistry {
+    #[cfg(feature = "default_plugins")]
     plugins: vec![
         Box::new(clear_context::ClearContextPlugin),
         Box::new(create_policy::CreatePolicyPlugin),
@@ -38,6 +39,8 @@ pub static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(|| PluginRe
         Box::new(set_column_security::SetColumnSecurityPlugin),
         Box::new(set_context::SetContextPlugin),
     ],
+    #[cfg(not(feature = "default_plugins"))]
+    plugins: vec![],
 });
 
 pub struct PluginRegistry {
