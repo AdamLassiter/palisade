@@ -32,14 +32,6 @@ pub struct CustomParser {
     registry: &'static PluginRegistry,
 }
 
-/// Format a token with its span for error messages
-fn format_token_with_span(token: &TokenWithSpan) -> String {
-    format!(
-        "'{}' at line {}, column {}",
-        token.token, token.span.start.line, token.span.start.column
-    )
-}
-
 /// Create a parser error with span context
 fn error_at_span(message: &str, token: &TokenWithSpan) -> ParserError {
     ParserError::ParserError(format!(

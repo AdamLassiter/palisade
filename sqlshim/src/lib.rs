@@ -1,8 +1,8 @@
 mod ffi;
-mod parser;
-mod plugin;
-mod rewriter;
-mod statement;
+pub mod parser;
+pub mod plugin;
+pub mod rewriter;
+pub mod statement;
 
 use libc::{c_char, c_int, c_void};
 
