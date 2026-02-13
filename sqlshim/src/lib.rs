@@ -1,5 +1,6 @@
 mod ffi;
 mod parser;
+mod plugin;
 mod rewriter;
 mod statement;
 
@@ -54,11 +55,11 @@ fn parse_and_rewrite(sql: &str) -> Option<String> {
         return None;
     }
 
-    let result = parser::parse(sql).map(|stmt| {
+    let result = parser::parse_rewrite(sql).map(|stmt| {
         if debug() {
-            eprintln!("sqlshim: parsed: {:?}", stmt);
+            eprintln!("sqlshim: rewrite: {:?}", stmt);
         }
-        rewriter::rewrite(stmt)
+        stmt
     });
 
     if debug() && result.is_none() {
