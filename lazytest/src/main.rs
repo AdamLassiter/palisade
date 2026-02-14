@@ -1,16 +1,18 @@
-use std::collections::HashMap;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    env,
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use rusqlite::{Connection, OpenFlags, Result, params};
-
 // ── Imports from the evfs crate for backup API testing ──────────────
 use sqlevfs::backup;
-use sqlevfs::crypto::keys::KeyScope;
-use sqlevfs::keyring::Keyring;
-use sqlevfs::kms::KmsProvider;
-use sqlevfs::kms::local::DeviceKeyProvider;
+use sqlevfs::{
+    crypto::keys::KeyScope,
+    keyring::Keyring,
+    kms::{KmsProvider, local::DeviceKeyProvider},
+};
 
 // ────────────────────────────────────────────────────────────────────
 // Helpers
@@ -73,19 +75,12 @@ impl TestRunner {
         eprintln!("  ✗ {msg}: {err}");
     }
 
-    fn assert_eq<T: PartialEq + std::fmt::Debug>(
-        &mut self,
-        label: &str,
-        got: &T,
-        expected: &T,
-    ) {
+    fn assert_eq<T: PartialEq + std::fmt::Debug>(&mut self, label: &str, got: &T, expected: &T) {
         if got == expected {
             self.ok(label);
         } else {
             self.failed += 1;
-            eprintln!(
-                "  ✗ {label}: expected {expected:?}, got {got:?}"
-            );
+            eprintln!("  ✗ {label}: expected {expected:?}, got {got:?}");
         }
     }
 
@@ -117,10 +112,7 @@ fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
 
     unsafe {
         conn.load_extension_enable()?;
-        match conn.load_extension(
-            "../sqlsec/target/release/libsqlsec",
-            None::<&str>,
-        ) {
+        match conn.load_extension("../sqlsec/target/release/libsqlsec", None::<&str>) {
             Ok(()) => t.ok("loaded sqlsec extension"),
             Err(e) => {
                 t.fail("load sqlsec extension", &e);
@@ -153,8 +145,7 @@ fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
         ("secret", 2),
         ("top_secret", 3),
     ] {
-        let stmt =
-            format!("DEFINE LEVEL clearance '{name}' = {val};");
+        let stmt = format!("DEFINE LEVEL clearance '{name}' = {val};");
         match conn.execute_batch(&stmt) {
             Ok(()) => t.ok(&stmt),
             Err(e) => t.fail(&stmt, &e),
@@ -191,8 +182,7 @@ fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
 
     // ── DROP POLICY ─────────────────────────────────────────────
     t.section("DROP POLICY");
-    match conn.execute_batch("DROP POLICY invoices_write ON invoices;")
-    {
+    match conn.execute_batch("DROP POLICY invoices_write ON invoices;") {
         Ok(()) => t.ok("DROP POLICY"),
         Err(e) => t.fail("DROP POLICY", &e),
     }
@@ -303,17 +293,11 @@ fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
 
     // ── Normal SQL passthrough ──────────────────────────────────
     t.section("Normal SQL Passthrough");
-    conn.execute_batch(
-        "CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT);",
-    )?;
-    conn.execute_batch(
-        "INSERT INTO test_table (id, name) VALUES (1, 'test');",
-    )?;
-    let name: String = conn.query_row(
-        "SELECT name FROM test_table WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
+    conn.execute_batch("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT);")?;
+    conn.execute_batch("INSERT INTO test_table (id, name) VALUES (1, 'test');")?;
+    let name: String = conn.query_row("SELECT name FROM test_table WHERE id = 1", [], |row| {
+        row.get(0)
+    })?;
     t.assert_eq("SELECT passthrough", &name, &"test".to_string());
 
     Ok(())
@@ -360,8 +344,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
 
     let conn = Connection::open_with_flags_and_vfs(
         &db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         "evfs",
     )?;
     t.ok("opened DB with vfs=evfs");
@@ -396,18 +379,10 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     )?;
     t.ok("INSERT 3 rows");
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM widgets",
-        [],
-        |r| r.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0))?;
     t.assert_eq("row count after insert", &count, &3i64);
 
-    let total: f64 = conn.query_row(
-        "SELECT SUM(price) FROM widgets",
-        [],
-        |r| r.get(0),
-    )?;
+    let total: f64 = conn.query_row("SELECT SUM(price) FROM widgets", [], |r| r.get(0))?;
     // 9.99 + 14.50 + 3.25 = 27.74
     let expected_total = 27.74f64;
     if (total - expected_total).abs() < 0.001 {
@@ -425,25 +400,14 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     // ── Reopen and verify persistence ───────────────────────────
     t.section("EVFS Encrypted Database — Reopen & Read");
 
-    let conn = Connection::open_with_flags_and_vfs(
-        &db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-        "evfs",
-    )?;
+    let conn =
+        Connection::open_with_flags_and_vfs(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY, "evfs")?;
     t.ok("reopened DB with vfs=evfs (read-only)");
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM widgets",
-        [],
-        |r| r.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0))?;
     t.assert_eq("row count after reopen", &count, &3i64);
 
-    let name: String = conn.query_row(
-        "SELECT name FROM widgets WHERE id = 2",
-        [],
-        |r| r.get(0),
-    )?;
+    let name: String = conn.query_row("SELECT name FROM widgets WHERE id = 2", [], |r| r.get(0))?;
     t.assert_eq("read row id=2", &name, &"Gizmo".to_string());
 
     drop(conn);
@@ -452,35 +416,32 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     t.section("EVFS Ciphertext Verification");
 
     let raw = std::fs::read(&db_path).expect("read raw DB file");
-    let has_sqlite_header =
-        raw.len() >= 16 && &raw[0..16] == b"SQLite format 3\0";
+    let has_sqlite_header = raw.len() >= 16 && &raw[0..16] == b"SQLite format 3\0";
+    if has_sqlite_header {
+        t.ok("raw DB file has SQLite header (expected)");
+    } else {
+        t.fail("raw DB file has SQLite header", &"header not found");
+    }
 
     // Page 1 may still have the SQLite header in cleartext (first
     // 100 bytes) depending on implementation, but the payload after
     // that should be encrypted.  Check that "Sprocket" does not
     // appear anywhere in the raw bytes.
     let raw_str = String::from_utf8_lossy(&raw);
-    let contains_plaintext = raw_str.contains("Sprocket")
-        || raw_str.contains("Gizmo")
-        || raw_str.contains("Doohickey");
+    let contains_plaintext =
+        raw_str.contains("Sprocket") || raw_str.contains("Gizmo") || raw_str.contains("Doohickey");
 
     if !contains_plaintext {
         t.ok("raw DB file does not contain plaintext row data");
     } else {
-        t.fail(
-            "ciphertext check",
-            &"plaintext row data found in raw file",
-        );
+        t.fail("ciphertext check", &"plaintext row data found in raw file");
     }
 
     // ── Multi-table test ────────────────────────────────────────
     t.section("EVFS Multi-Table Operations");
 
-    let conn = Connection::open_with_flags_and_vfs(
-        &db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE,
-        "evfs",
-    )?;
+    let conn =
+        Connection::open_with_flags_and_vfs(&db_path, OpenFlags::SQLITE_OPEN_READ_WRITE, "evfs")?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS orders (
@@ -508,24 +469,13 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
              JOIN widgets w ON w.id = o.widget_id
              ORDER BY o.id",
         )?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<Vec<_>>>()?;
-        rows
+
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<Result<Vec<_>>>()?
     };
 
-    t.assert_eq(
-        "JOIN row 0",
-        &joined[0],
-        &("Sprocket".to_string(), 100i64),
-    );
-    t.assert_eq(
-        "JOIN row 1",
-        &joined[1],
-        &("Doohickey".to_string(), 250i64),
-    );
+    t.assert_eq("JOIN row 0", &joined[0], &("Sprocket".to_string(), 100i64));
+    t.assert_eq("JOIN row 1", &joined[1], &("Doohickey".to_string(), 250i64));
 
     // ── Transaction test ────────────────────────────────────────
     t.section("EVFS Transactions");
@@ -537,11 +487,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     )?;
     conn.execute_batch("ROLLBACK;")?;
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM widgets",
-        [],
-        |r| r.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0))?;
     t.assert_eq("count after ROLLBACK", &count, &3i64);
 
     conn.execute_batch("BEGIN;")?;
@@ -551,11 +497,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     )?;
     conn.execute_batch("COMMIT;")?;
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM widgets",
-        [],
-        |r| r.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM widgets", [], |r| r.get(0))?;
     t.assert_eq("count after COMMIT", &count, &4i64);
 
     drop(conn);
@@ -604,8 +546,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     for i in 0..page_count {
         let off = i * page_size as usize;
         let pattern = (i as u8).wrapping_add(0x41); // 'A','B','C','D'
-        db_bytes[off..off + page_size as usize - reserve]
-            .fill(pattern);
+        db_bytes[off..off + page_size as usize - reserve].fill(pattern);
         if let Err(e) = sqlevfs::crypto::page::encrypt_page(
             &mut db_bytes[off..off + page_size as usize],
             i as u32 + 1,
@@ -617,9 +558,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         }
     }
     std::fs::write(&db_path, &db_bytes).expect("write source DB");
-    t.ok(&format!(
-        "created encrypted source DB ({page_count} pages)"
-    ));
+    t.ok(&format!("created encrypted source DB ({page_count} pages)"));
 
     // ── Create backup ───────────────────────────────────────────
     t.section("EVFS Backup — Create");
@@ -635,10 +574,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         page_size,
         reserve,
     ) {
-        Ok(()) => t.ok(&format!(
-            "backup created ({} bytes)",
-            backup_buf.len()
-        )),
+        Ok(()) => t.ok(&format!("backup created ({} bytes)", backup_buf.len())),
         Err(e) => {
             t.fail("create backup", &e);
             return;
@@ -647,17 +583,13 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
 
     // The backup should be larger than just the raw pages because
     // of the header.
-    let min_expected =
-        8 + 4 + page_count * page_size as usize; // magic + hdr_len + pages
+    let min_expected = 8 + 4 + page_count * page_size as usize; // magic + hdr_len + pages
     if backup_buf.len() >= min_expected {
         t.ok("backup size plausible");
     } else {
         t.fail(
             "backup size",
-            &format!(
-                "expected >= {min_expected}, got {}",
-                backup_buf.len()
-            ),
+            &format!("expected >= {min_expected}, got {}", backup_buf.len()),
         );
     }
 
@@ -671,10 +603,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     // ── Verify backup ───────────────────────────────────────────
     t.section("EVFS Backup — Verify");
 
-    match backup::verify_backup(
-        &mut Cursor::new(&backup_buf),
-        bkp_provider.as_ref(),
-    ) {
+    match backup::verify_backup(&mut Cursor::new(&backup_buf), bkp_provider.as_ref()) {
         Ok(result) => {
             t.assert_eq(
                 "verified page_count",
@@ -696,10 +625,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     t.section("EVFS Backup — Wrong Key Rejection");
 
     let wrong_provider = make_provider(&tgt_key); // different key
-    match backup::verify_backup(
-        &mut Cursor::new(&backup_buf),
-        wrong_provider.as_ref(),
-    ) {
+    match backup::verify_backup(&mut Cursor::new(&backup_buf), wrong_provider.as_ref()) {
         Ok(result) if result.is_ok() => {
             t.fail(
                 "wrong-key verify",
@@ -739,8 +665,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // Verify restored DB has the right size.
-    let restored_bytes =
-        std::fs::read(&restored_path).expect("read restored DB");
+    let restored_bytes = std::fs::read(&restored_path).expect("read restored DB");
     t.assert_eq(
         "restored DB size",
         &restored_bytes.len(),
@@ -754,23 +679,13 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     let mut all_pages_ok = true;
     for i in 0..page_count {
         let off = i * page_size as usize;
-        let mut page =
-            restored_bytes[off..off + page_size as usize].to_vec();
-        match sqlevfs::crypto::page::decrypt_page(
-            &mut page,
-            i as u32 + 1,
-            &tgt_dek,
-            reserve,
-        ) {
+        let mut page = restored_bytes[off..off + page_size as usize].to_vec();
+        match sqlevfs::crypto::page::decrypt_page(&mut page, i as u32 + 1, &tgt_dek, reserve) {
             Ok(()) => {
                 let expected = (i as u8).wrapping_add(0x41);
-                let payload =
-                    &page[..page_size as usize - reserve];
+                let payload = &page[..page_size as usize - reserve];
                 if payload.iter().all(|&b| b == expected) {
-                    t.ok(&format!(
-                        "restored page {} content correct",
-                        i + 1
-                    ));
+                    t.ok(&format!("restored page {} content correct", i + 1));
                 } else {
                     t.fail(
                         &format!("restored page {} content", i + 1),
@@ -780,10 +695,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
                 }
             }
             Err(e) => {
-                t.fail(
-                    &format!("decrypt restored page {}", i + 1),
-                    &e,
-                );
+                t.fail(&format!("decrypt restored page {}", i + 1), &e);
                 all_pages_ok = false;
             }
         }
@@ -796,17 +708,12 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     t.section("EVFS Backup — KEK Rotation");
 
     let backup_file = tmp.path("rotatable.evfs-backup");
-    std::fs::write(&backup_file, &backup_buf)
-        .expect("write backup file");
+    std::fs::write(&backup_file, &backup_buf).expect("write backup file");
 
     let new_kek = tmp.write_keyfile("new-bkp.key", [0x44; 32]);
     let new_provider = make_provider(&new_kek);
 
-    match backup::rotate_backup_kek(
-        &backup_file,
-        bkp_provider.as_ref(),
-        new_provider.as_ref(),
-    ) {
+    match backup::rotate_backup_kek(&backup_file, bkp_provider.as_ref(), new_provider.as_ref()) {
         Ok(()) => t.ok("KEK rotation succeeded"),
         Err(e) => {
             t.fail("KEK rotation", &e);
@@ -815,12 +722,8 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // Verify with the NEW key should work.
-    let rotated_data =
-        std::fs::read(&backup_file).expect("read rotated backup");
-    match backup::verify_backup(
-        &mut Cursor::new(&rotated_data),
-        new_provider.as_ref(),
-    ) {
+    let rotated_data = std::fs::read(&backup_file).expect("read rotated backup");
+    match backup::verify_backup(&mut Cursor::new(&rotated_data), new_provider.as_ref()) {
         Ok(result) if result.is_ok() => {
             t.ok("verify after rotation (new key) passed");
         }
@@ -834,15 +737,9 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // Verify with the OLD key should fail.
-    match backup::verify_backup(
-        &mut Cursor::new(&rotated_data),
-        bkp_provider.as_ref(),
-    ) {
+    match backup::verify_backup(&mut Cursor::new(&rotated_data), bkp_provider.as_ref()) {
         Ok(result) if result.is_ok() => {
-            t.fail(
-                "verify after rotation (old key)",
-                &"should have failed",
-            );
+            t.fail("verify after rotation (old key)", &"should have failed");
         }
         _ => t.ok("old key correctly rejected after rotation"),
     }
@@ -869,18 +766,12 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // Quick sanity: first page content.
-    let restored2_bytes =
-        std::fs::read(&restored2_path).expect("read restored2 DB");
+    let restored2_bytes = std::fs::read(&restored2_path).expect("read restored2 DB");
     let tgt2_dek = tgt2_keyring
         .dek_for(&KeyScope::Database)
         .expect("get tgt2 DEK");
     let mut page1 = restored2_bytes[..page_size as usize].to_vec();
-    match sqlevfs::crypto::page::decrypt_page(
-        &mut page1,
-        1,
-        &tgt2_dek,
-        reserve,
-    ) {
+    match sqlevfs::crypto::page::decrypt_page(&mut page1, 1, &tgt2_dek, reserve) {
         Ok(()) => {
             let expected = 0x41u8; // 'A'
             if page1[..page_size as usize - reserve]
@@ -910,9 +801,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     let mut page = vec![0xBEu8; page_size];
     let original = page.clone();
 
-    match sqlevfs::crypto::page::encrypt_page(
-        &mut page, 1, &dek, reserve,
-    ) {
+    match sqlevfs::crypto::page::encrypt_page(&mut page, 1, &dek, reserve) {
         Ok(()) => t.ok("encrypt_page succeeded"),
         Err(e) => {
             t.fail("encrypt_page", &e);
@@ -921,17 +810,13 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     }
 
     // Ciphertext should differ from plaintext.
-    if page[..page_size - reserve]
-        != original[..page_size - reserve]
-    {
+    if page[..page_size - reserve] != original[..page_size - reserve] {
         t.ok("ciphertext differs from plaintext");
     } else {
         t.fail("ciphertext check", &"ciphertext == plaintext");
     }
 
-    match sqlevfs::crypto::page::decrypt_page(
-        &mut page, 1, &dek, reserve,
-    ) {
+    match sqlevfs::crypto::page::decrypt_page(&mut page, 1, &dek, reserve) {
         Ok(()) => t.ok("decrypt_page succeeded"),
         Err(e) => {
             t.fail("decrypt_page", &e);
@@ -939,9 +824,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
         }
     }
 
-    if page[..page_size - reserve]
-        == original[..page_size - reserve]
-    {
+    if page[..page_size - reserve] == original[..page_size - reserve] {
         t.ok("round-trip payload matches");
     } else {
         t.fail("round-trip", &"payload mismatch after decrypt");
@@ -952,14 +835,9 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
 
     let dek2 = sqlevfs::crypto::keys::Dek::generate();
     let mut page = vec![0xCDu8; page_size];
-    sqlevfs::crypto::page::encrypt_page(
-        &mut page, 1, &dek, reserve,
-    )
-    .unwrap();
+    sqlevfs::crypto::page::encrypt_page(&mut page, 1, &dek, reserve).unwrap();
 
-    match sqlevfs::crypto::page::decrypt_page(
-        &mut page, 1, &dek2, reserve,
-    ) {
+    match sqlevfs::crypto::page::decrypt_page(&mut page, 1, &dek2, reserve) {
         Err(_) => t.ok("wrong key correctly rejected"),
         Ok(()) => t.fail("wrong key", &"decryption should have failed"),
     }
@@ -968,18 +846,11 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     t.section("EVFS Crypto — Wrong Page Number Rejection");
 
     let mut page = vec![0xEFu8; page_size];
-    sqlevfs::crypto::page::encrypt_page(
-        &mut page, 5, &dek, reserve,
-    )
-    .unwrap();
+    sqlevfs::crypto::page::encrypt_page(&mut page, 5, &dek, reserve).unwrap();
 
-    match sqlevfs::crypto::page::decrypt_page(
-        &mut page, 6, &dek, reserve,
-    ) {
+    match sqlevfs::crypto::page::decrypt_page(&mut page, 6, &dek, reserve) {
         Err(_) => t.ok("wrong page_no correctly rejected"),
-        Ok(()) => {
-            t.fail("wrong page_no", &"decryption should have failed")
-        }
+        Ok(()) => t.fail("wrong page_no", &"decryption should have failed"),
     }
 
     // ── Envelope wrap / unwrap ──────────────────────────────────
@@ -990,10 +861,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     let provider = make_provider(&kf);
 
     let dek = sqlevfs::crypto::keys::Dek::generate();
-    let wrapped = match sqlevfs::crypto::envelope::wrap_dek(
-        &dek,
-        provider.as_ref(),
-    ) {
+    let wrapped = match sqlevfs::crypto::envelope::wrap_dek(&dek, provider.as_ref()) {
         Ok(w) => {
             t.ok("wrap_dek succeeded");
             w
@@ -1004,10 +872,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
         }
     };
 
-    match sqlevfs::crypto::envelope::unwrap_dek(
-        &wrapped,
-        provider.as_ref(),
-    ) {
+    match sqlevfs::crypto::envelope::unwrap_dek(&wrapped, provider.as_ref()) {
         Ok(unwrapped) => {
             if unwrapped.as_bytes() == dek.as_bytes() {
                 t.ok("unwrap_dek round-trip matches");
@@ -1021,14 +886,9 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     // Unwrap with wrong provider should fail.
     let kf2 = tmp.write_keyfile("wrong.key", [0x88; 32]);
     let wrong_provider = make_provider(&kf2);
-    match sqlevfs::crypto::envelope::unwrap_dek(
-        &wrapped,
-        wrong_provider.as_ref(),
-    ) {
+    match sqlevfs::crypto::envelope::unwrap_dek(&wrapped, wrong_provider.as_ref()) {
         Err(_) => t.ok("unwrap with wrong KEK correctly rejected"),
-        Ok(_) => {
-            t.fail("unwrap wrong KEK", &"should have failed")
-        }
+        Ok(_) => t.fail("unwrap wrong KEK", &"should have failed"),
     }
 }
 
@@ -1074,10 +934,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
             if dek_users.as_bytes() != dek1.as_bytes() {
                 t.ok("Table('users') DEK differs from Database DEK");
             } else {
-                t.fail(
-                    "table scope",
-                    &"table DEK same as database DEK",
-                );
+                t.fail("table scope", &"table DEK same as database DEK");
             }
         }
         Err(e) => t.fail("dek_for(Table('users'))", &e),
@@ -1092,10 +949,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
             if dek_col.as_bytes() != dek1.as_bytes() {
                 t.ok("Column('users.ssn') DEK differs from Database DEK");
             } else {
-                t.fail(
-                    "column scope",
-                    &"column DEK same as database DEK",
-                );
+                t.fail("column scope", &"column DEK same as database DEK");
             }
         }
         Err(e) => t.fail("dek_for(Column)", &e),
@@ -1114,15 +968,11 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
     let sidecar = fake_db.with_extension("evfs-keyring");
     if sidecar.exists() {
         t.ok("sidecar file created");
-        let contents =
-            std::fs::read_to_string(&sidecar).unwrap();
+        let contents = std::fs::read_to_string(&sidecar).unwrap();
         if contents.contains("database") {
             t.ok("sidecar contains 'database' scope entry");
         } else {
-            t.fail(
-                "sidecar contents",
-                &"missing 'database' key",
-            );
+            t.fail("sidecar contents", &"missing 'database' key");
         }
     } else {
         t.fail("sidecar", &"file not created");
@@ -1144,12 +994,24 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
 fn main() {
     println!("=== LazySQL + EVFS Test Suite ===");
 
+    // ── Parse mode argument ─────────────────────────────────────
+    let mode = match env::args().nth(1).as_deref() {
+        Some("--debug") => "debug",
+        Some("--release") | None => "release",
+        Some(other) => {
+            eprintln!("Usage: lazytest [--release|--debug]");
+            eprintln!("Unknown option: {}", other);
+            std::process::exit(1);
+        }
+    };
+
+    println!("Running in {} mode...\n", mode);
+
     let mut t = TestRunner::new();
 
-    // ── Original sqlshim/sqlsec tests ───────────────────────────
-    // Only run if the sqlsec extension is available.
-    let sqlsec_path =
-        Path::new("../sqlsec/target/release/libsqlsec.so");
+    // ── sqlshim/sqlsec tests ────────────────────────────────────
+    let sqlsec_path = PathBuf::from(format!("../sqlsec/target/{}/libsqlsec.so", mode));
+
     if sqlsec_path.exists() {
         match run_sqlshim_tests(&mut t) {
             Ok(()) => {}
@@ -1162,33 +1024,29 @@ fn main() {
         );
     }
 
-    // ── EVFS crypto unit tests (always runnable) ────────────────
+    // ── EVFS crypto unit tests ──────────────────────────────────
     run_evfs_crypto_tests(&mut t);
 
     // ── EVFS keyring tests ──────────────────────────────────────
     run_evfs_keyring_tests(&mut t);
 
-    // ── EVFS backup tests (Rust API, no VFS needed) ─────────────
+    // ── EVFS backup tests ───────────────────────────────────────
     run_evfs_backup_tests(&mut t);
 
     // ── EVFS VFS integration tests ──────────────────────────────
-    // Only run if the extension is built.
-    let evfs_path = Path::new(
-        "../sqlevfs/target/release/libsqlevfs.so",
-    );
+    let evfs_path_str = format!("../sqlevfs/target/{}/libsqlevfs.so", mode);
+    let evfs_path = Path::new(&evfs_path_str);
+
     if evfs_path.exists() {
         match run_evfs_vfs_tests(&mut t) {
             Ok(()) => {}
             Err(e) => t.fail("evfs VFS test suite", &e),
         }
     } else {
-        println!(
-            "\n⚠ Skipping EVFS VFS tests ({})",
-            evfs_path.display()
-        );
+        println!("\n⚠ Skipping EVFS VFS tests ({})", evfs_path.display());
     }
 
-    // ── Summary ─────────────────────────────────────────────────
+    // ── Summary ────────────────────────────────────────────────
     t.summary();
 
     if t.failed > 0 {

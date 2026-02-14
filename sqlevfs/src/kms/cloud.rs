@@ -122,10 +122,10 @@ impl KmsProvider for CloudKmsProvider {
         // Check cache first.
         {
             let guard = self.cached_kek.lock();
-            if let Some((ref cached_id, ref bytes)) = *guard {
-                if cached_id == id {
-                    return Ok(bytes.clone());
-                }
+            if let Some((ref cached_id, ref bytes)) = *guard
+                && cached_id == id
+            {
+                return Ok(bytes.clone());
             }
         }
         // Call KMS Decrypt with the ciphertext blob stored in the id.
@@ -186,8 +186,6 @@ fn base64_encode(input: &[u8]) -> String {
 /// Minimal inline base64 so we don't need an extra crate.
 mod base64_reader {
     use std::io::{self, Read};
-
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     fn decode_byte(b: u8) -> Option<u8> {
         match b {
@@ -260,7 +258,7 @@ mod base64_writer {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     pub fn encode(input: &[u8]) -> String {
-        let mut out = Vec::with_capacity((input.len() + 2) / 3 * 4);
+        let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
         for chunk in input.chunks(3) {
             let b0 = chunk[0] as u32;
             let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };

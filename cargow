@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 # Check if at least one argument (cargo command) is provided
 if [ $# -lt 1 ]; then
@@ -19,6 +20,24 @@ case "$CARGO_CMD" in
         exit 1
         ;;
 esac
+
+# Detect build mode: release if "--release" is present, otherwise debug
+MODE="debug"
+for arg in "$@"; do
+    if [[ "$arg" == "--release" ]]; then
+        MODE="release"
+        break
+    fi
+done
+
+# Enable backtraces only in debug mode
+if [[ "$MODE" == "debug" ]]; then
+    echo "🐛 Debug mode detected → enabling full Rust backtraces"
+    export RUST_BACKTRACE=full
+    export RUST_LIB_BACKTRACE=1
+else
+    echo "⚡ Release mode detected → backtraces disabled"
+fi
 
 # Find all directories with Cargo.toml, including the root if present
 DIRS=$(find . -name Cargo.toml -exec dirname {} \; | sort -u)

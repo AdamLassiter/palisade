@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Default mode
+MODE="release"
+
+# Parse argument
+case "${1:-}" in
+  --release|"")
+    MODE="release"
+    ;;
+  --debug)
+    MODE="debug"
+    ;;
+  *)
+    echo "Usage: $0 [--release|--debug]"
+    exit 1
+    ;;
+esac
+
+echo "Running in $MODE mode..."
+
+# Build + test
+if [[ "$MODE" == "release" ]]; then
+  ./cargow build --release
+  ./cargow test --release
+else
+  ./cargow build
+  ./cargow test
+fi
+
+# Keyfile setup
+dd if=/dev/urandom of=/tmp/evfs-test-master.key bs=32 count=1
+
+# Pick correct target dir + preload library
+TARGET_DIR="target/$MODE"
+SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
+
+# Run lazytest
+cd lazytest
+
+EVFS_KEYFILE=/tmp/evfs-test-master.key \
+  LD_PRELOAD="$SQLSHIM_LIB" \
+  RUST_BACKTRACE=full \
+  "./$TARGET_DIR/lazytest"

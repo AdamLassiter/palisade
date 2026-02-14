@@ -1,6 +1,6 @@
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 
-use super::keys::{Dek, KekId, WrappedDek};
+use super::keys::{Dek, WrappedDek};
 use crate::kms::KmsProvider;
 
 /// Wrap a DEK under the current KEK from the provider.

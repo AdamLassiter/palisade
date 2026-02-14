@@ -47,12 +47,11 @@ impl Keyring {
         let mut guard = self.sidecar_path.write();
         let sidecar = db_path.with_extension("evfs-keyring");
         // Try to load existing keyring.
-        if sidecar.exists() {
-            if let Ok(data) = std::fs::read(&sidecar) {
-                if let Ok(kr) = serde_json::from_slice::<PersistedKeyring>(&data) {
-                    *self.persisted.write() = kr;
-                }
-            }
+        if sidecar.exists()
+            && let Ok(data) = std::fs::read(&sidecar)
+            && let Ok(kr) = serde_json::from_slice::<PersistedKeyring>(&data)
+        {
+            *self.persisted.write() = kr;
         }
         *guard = Some(sidecar);
     }
