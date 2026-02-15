@@ -1,527 +1,87 @@
-# 1. Policy-Aware Query Rewriting + Secure Views
+# SQLite Security & Extension Toolkit
 
-### Goal
+This repo contains a set of small, composable systems for testing and enforcing security controls around SQLite. Each component is independent, but they’re designed to work together (often via `LD_PRELOAD`) so you can mix-and-match behaviors in a single process.
 
-Make access control **automatic**, not something every developer has to remember in every query.
+## Components
 
-SQLite has no native RLS, so without rewriting, people end up doing:
+### 1) `sqlsec` — Label-Based Security (in-SQL enforcement)
 
-```sql
-SELECT * FROM invoices WHERE tenant_id = ?;
-```
+`sqlsec` is a SQLite extension that implements **row-level and column-level security** using:
 
-…and then someone forgets once, and boom.
+- **Security labels**: boolean expressions over context attributes (e.g. `role=admin&team=finance`)
+- **Logical views**: apps query views; views filter rows/columns based on labels
+- **INSTEAD OF triggers**: safe `INSERT/UPDATE/DELETE` through secure views
+- **Context attributes** with push/pop scoping
+- Optional **MLS-style levels** with dominance (`clearance>=secret`)
 
-### The Feature
+Enforcement is performed *inside SQLite* using views + triggers (no app-side filtering).
 
-Introduce **secure objects**:
-
-* secure tables
-* secure views
-* policy-bound queries
-
-Example:
-
-```sql
-CREATE POLICY invoices_policy
-ON invoices
-FOR SELECT
-USING (
-  has_role('finance')
-  AND has_project_membership(project_id)
-);
-```
-
-Now:
-
-```sql
-SELECT * FROM invoices;
-```
-
-is transparently rewritten to:
-
-```sql
-SELECT * FROM invoices
-WHERE (
-  has_role('finance')
-  AND has_project_membership(project_id)
-);
-```
-
-### Implementation Layer
-
-SQLite gives you a few hooks:
-
-* `sqlite3_set_authorizer` (approve/deny operations)
-* query planner hooks are limited
-* easiest: wrap via **views**
-* advanced: modify AST in `sqlite3_prepare_v3`
-
-### Secure Views as the Lazy Default
-
-```sql
-CREATE SECURE VIEW invoices_secure AS
-SELECT * FROM invoices WHERE policy_check(...);
-```
-
-Then you can hide the base table entirely:
-
-```sql
-DENY DIRECT SELECT ON invoices;
-```
-
-### Bonus Features
-
-* **Policy explainability**
-
-```sql
-EXPLAIN POLICY ON invoices FOR user='alice';
-```
-
-* **Policy debugging mode**
-
-```sql
-SET policy_debug=ON;
-```
-
-### Sharp Edges
-
-* query rewriting must avoid bypass via joins/subqueries
-* timing leaks unless paired with planner safety (see #6-ish)
+See: the `sqlsec` README (full model, syntax, function reference, constraints).
 
 ---
 
-# 2. Transparent Encryption (VFS Level)
+### 2) `sqlevfs` — Encrypted VFS (page-at-rest encryption)
 
-### Goal
+`sqlevfs` registers a custom SQLite VFS (`evfs`) that wraps the OS VFS and provides **transparent page encryption**:
 
-Make “SQLite but encrypted” a default baseline, not a paid addon.
+- AES-256-GCM per page, DEK managed via envelope encryption (KEK from a provider)
+- Wrapped DEKs persisted in a **sidecar** file next to the DB
+- Supports **partial I/O** via read-modify-write for correctness
+- Encrypts the **main DB file**; journaling/WAL/temp files pass through
+- Uses an on-page marker (`EVFSv1`) stored in reserved bytes to detect encrypted pages
+- **Page 1 is plaintext** (required for SQLite to read schema/open DB); pages 2+ encrypted
 
-SQLite doesn’t ship encryption because it’s a library, so you add it at the storage layer.
-
-### The Feature
-
-A custom VFS:
-
-* encrypt pages before writing
-* decrypt pages after reading
-* keys managed per DB / per tenant
-
-### Encryption Granularity Options
-
-#### Whole-file encryption
-
-Simplest: everything is encrypted.
-
-Pros: easy
-Cons: no selective sharing
-
-#### Page-level encryption (best)
-
-Encrypt each 4KB page independently.
-
-Pros:
-
-* random access stays fast
-* works naturally with WAL
-
-#### Column-level encryption (harder)
-
-Only encrypt sensitive fields:
-
-```sql
-ENCRYPT COLUMN users.ssn WITH key('pii');
-```
-
-This requires encoding blobs + query limitations.
-
-### Key Models
-
-* single DB key (local apps)
-* tenant keys (multi-tenant SaaS)
-* envelope encryption (KMS-managed master key)
-
-### Implementation Detail
-
-VFS hooks:
-
-* `xRead`
-* `xWrite`
-* `xFileControl`
-
-Encryption sits *below* SQLite.
-
-So the DB file is useless without keys.
-
-### Bonus Feature: Key Rotation
-
-```sql
-ROTATE ENCRYPTION KEY;
-```
-
-Implemented by rewriting pages gradually, not all at once.
-
-### Sharp Edges
-
-* must encrypt WAL too
-* must avoid leaking plaintext via temp files
-* performance: needs hardware AES
+This is primarily an *at-rest* control: it protects database pages on disk, not SQL semantics.
 
 ---
 
-# 3. Auditing + Access Logs
+### 3) `sqlshim` — `LD_PRELOAD` SQL Rewriter (prepare-time rewriting)
 
-### Goal
+`sqlshim` is a tiny `LD_PRELOAD` shim that hooks SQLite prepare APIs (e.g. `sqlite3_prepare_v2`) and **parses + rewrites SQL text at runtime**.
 
-If you’re doing labelled data, you need:
+It’s useful for “drop-in” policy transformations without changing the application binary, such as:
 
-* who accessed what
-* what was denied
-* compliance trails
+- injecting tenant filters
+- blocking/rewriting dangerous statements
+- renaming tables/columns
+- normalizing queries for logging/auditing
 
-### The Feature
-
-Automatic audit events for:
-
-* SELECT on protected objects
-* UPDATE/DELETE changes
-* policy denials
-
-Example:
-
-```sql
-SELECT * FROM invoices;
-```
-
-Emits:
-
-```json
-{
-  "user": "alice",
-  "action": "SELECT",
-  "table": "invoices",
-  "rows_returned": 12,
-  "timestamp": ...
-}
-```
-
-### Implementation Layers
-
-#### SQL-level triggers (limited)
-
-Only for writes:
-
-```sql
-CREATE TRIGGER audit_update AFTER UPDATE ON invoices ...
-```
-
-#### Extension-level query hooks (better)
-
-Intercept prepares/steps:
-
-* log query text
-* log affected tables
-* attach user context
-
-#### Authorizer hook (best for denied access)
-
-`sqlite3_set_authorizer` gives:
-
-* operation type
-* table name
-* column name
-
-### Audit Storage Options
-
-* append-only table:
-
-```sql
-CREATE TABLE audit_log(...);
-```
-
-* external sink (syslog, Kafka)
-
-### Bonus Features
-
-* tamper-evident audit chain (hash chaining)
-* audit queries:
-
-```sql
-SELECT * FROM audit_log WHERE user='bob';
-```
-
-### Sharp Edges
-
-* logging SELECT row-level is expensive
-* you want sampling or aggregation
+Rewriting occurs at prepare-time by modifying SQL text before SQLite compiles it.
 
 ---
 
-# 4. Multi-Tenancy Primitives
+### 4) `lazytest` — Preload-Friendly Test Harness
 
-### Goal
+`lazytest` is a small Rust binary that runs SQLite workloads specifically to make it easy to test combinations of shims/extensions under `LD_PRELOAD`.
 
-Make “tenant scoping” a first-class primitive, not a convention.
+It helps you:
 
-### The Feature
-
-Instead of every table having ad hoc tenant filters, you declare:
-
-```sql
-CREATE TENANT TABLE invoices;
-```
-
-Which implies:
-
-* tenant_id column exists
-* tenant_id is always filtered
-* tenant_id is part of every unique key
-
-### Tenant Context
-
-```sql
-SET tenant='acme';
-```
-
-Now:
-
-```sql
-SELECT * FROM invoices;
-```
-
-means:
-
-```sql
-SELECT * FROM invoices WHERE tenant_id='acme';
-```
-
-### Tenant-Safe Constraints
-
-Without this, you get bugs like:
-
-* invoice number must be unique globally
-
-Instead:
-
-```sql
-UNIQUE(tenant_id, invoice_number)
-```
-
-### Tenant-Aware Foreign Keys
-
-```sql
-FOREIGN KEY (tenant_id, customer_id)
-REFERENCES customers(tenant_id, id)
-```
-
-### Implementation
-
-This is basically:
-
-* policy injection (feature #1)
-* schema helpers/macros
-
-### Bonus: Tenant Migration Tools
-
-```sql
-EXPORT TENANT 'acme';
-IMPORT TENANT 'acme';
-```
-
-### Sharp Edges
-
-* cross-tenant queries must require explicit override
-* admin mode must be carefully controlled
+- reproduce issues in a controlled process
+- validate that multiple components work together (e.g. `sqlshim` + `sqlsec` + `sqlevfs`)
+- run targeted end-to-end scenarios without modifying an application
 
 ---
 
-# 5. CDC / Changefeeds
+## How they fit together
 
-### Goal
+Common combinations:
 
-Make SQLite usable for sync, replication, and event-driven systems.
+- **At-rest encryption + in-DB access control**: `sqlevfs` protects on-disk pages; `sqlsec` enforces row/column rules inside SQLite.
+- **Query rewriting + in-DB access control**: `sqlshim` can enforce “mandatory predicates” or block statements; `sqlsec` remains the source of truth for visibility/update rules.
+- **All three**: `sqlshim` shapes incoming SQL, `sqlsec` enforces label-based policy, `sqlevfs` encrypts pages on disk.
+- Use **`lazytest`** as the harness to run these stacks under `LD_PRELOAD`.
 
-People always reinvent:
+## Combined usage (conceptual)
 
-* “updated_at” columns
-* polling loops
-* triggers writing to outbox tables
+- Load `sqlsec` as a SQLite extension when you need label-based RLS/CLS.
+- Register `sqlevfs` (VFS `evfs`) when you need at-rest encryption.
+- Preload `sqlshim` when you need runtime SQL rewriting without changing the app.
+- Use `lazytest` to exercise and validate the stack.
 
-Just bake it in.
+(Each component has its own build/run instructions in its respective README.)
 
-### The Feature
+## Quickstart
 
-Changefeed declarations:
-
-```sql
-CREATE CHANGEFEED invoices_feed ON invoices;
+```sh
+./test
 ```
-
-Now you can do:
-
-```sql
-SELECT * FROM changes('invoices_feed')
-WHERE seq > ?;
-```
-
-Returns:
-
-* insert/update/delete events
-* before/after images
-* timestamp
-* user context
-
-### Implementation Options
-
-#### Trigger-based outbox (easy)
-
-```sql
-CREATE TABLE invoices_changes(...);
-```
-
-Triggers append rows.
-
-#### WAL-based decoding (hard but powerful)
-
-Read WAL frames directly, like Postgres logical decoding.
-
-Pros:
-
-* no trigger overhead
-* captures everything
-
-Cons:
-
-* complicated format parsing
-
-### Bonus Features
-
-* filtered feeds:
-
-```sql
-CREATE CHANGEFEED projectx_feed
-ON invoices WHERE project_id='x';
-```
-
-* policy-aware feeds (don’t leak hidden rows)
-
-### Sharp Edges
-
-* ordering guarantees
-* retention/cleanup needed
-
----
-
-# 6. Temporal / History Tables
-
-### Goal
-
-Make “what did this look like last week” easy.
-
-Services always need:
-
-* auditability
-* undo
-* point-in-time recovery
-
-### The Feature
-
-```sql
-CREATE TEMPORAL TABLE invoices;
-```
-
-Automatically creates history:
-
-* valid_from
-* valid_to
-* version id
-
-Now:
-
-```sql
-SELECT * FROM invoices AS OF '2026-01-01';
-```
-
-Or:
-
-```sql
-SELECT * FROM invoices HISTORY
-WHERE id=5;
-```
-
-### Implementation
-
-#### Trigger-based versioning
-
-On update:
-
-* copy old row into invoices_history
-* mark validity ranges
-
-#### Append-only storage
-
-Never mutate rows, only insert new versions.
-
-### Bonus Features
-
-* diff queries:
-
-```sql
-SELECT diff(invoices, id=5, t1, t2);
-```
-
-* rollback:
-
-```sql
-RESTORE invoices TO '2026-01-01';
-```
-
-### Sharp Edges
-
-* history grows fast
-* needs pruning policies
-
----
-
-# The Real Magic: These Six Reinforce Each Other
-
-This is the fun part:
-
-* Policies (#1) define tenant scoping (#4)
-* Audit (#3) records policy decisions
-* Temporal (#6) gives compliance history
-* Encryption (#2) protects everything at rest
-* CDC (#5) powers sync + event outbox
-* Tenant primitives (#4) make SaaS trivial
-
-Together, you get:
-
-**SQLite-as-a-secure-service-core**
-
----
-
-# If You Were Packaging This…
-
-You could ship it as:
-
-### SQL Surface
-
-```sql
-CREATE POLICY ...
-CREATE TENANT TABLE ...
-CREATE CHANGEFEED ...
-CREATE TEMPORAL TABLE ...
-SET CONTEXT user=...
-```
-
-### Extension Core
-
-* authorizer enforcement
-* query rewriting
-* audit hooks
-
-### VFS Layer
-
-* encryption
-* resilience
-* WAL shipping
