@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod crypto;
+pub mod policy;
 pub mod io;
 pub mod keyring;
 pub mod kms;
@@ -12,12 +13,12 @@ use kms::KmsProvider;
 
 /// Two high-level operational modes.
 pub enum Mode {
-    /// Single device — KEK from a local keyfile or passphrase.
+    /// Single device - KEK from a local keyfile or passphrase.
     DeviceKey {
         keyfile: Option<PathBuf>,
         passphrase: Option<String>,
     },
-    /// Multi-tenant SaaS — each tenant has a cloud KMS key.
+    /// Multi-tenant SaaS - each tenant has a cloud KMS key.
     TenantKey {
         /// Cloud KMS key identifier (ARN, resource name, key URI, …).
         key_id: String,
@@ -27,10 +28,10 @@ pub enum Mode {
 }
 
 pub struct EvfsBuilder {
-    name: String,
-    page_size: u32,
-    reserve_size: usize,
-    provider: Arc<dyn KmsProvider>,
+    pub name: String,
+    pub page_size: u32,
+    pub reserve_size: usize,
+    pub provider: Arc<dyn KmsProvider>,
 }
 
 impl EvfsBuilder {
@@ -55,7 +56,7 @@ impl EvfsBuilder {
         Self {
             name: "evfs".into(),
             page_size: 4096,
-            reserve_size: 48, // 16 tag + 12 nonce + 20 spare
+            reserve_size: 48, // 16 tag + 6 marker + 26 spare
             provider,
         }
     }
@@ -127,6 +128,56 @@ pub extern "C" fn sqlite3_evfs_init(
         Err(e) => {
             log::error!("sqlite-evfs: registration failed: {e}");
             1
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::{crypto::keys::KekId, kms::KmsProvider};
+
+    // Mock KmsProvider for testing
+    pub struct MockKmsProvider {
+        pub wrap_count: Mutex<usize>,
+        pub unwrap_count: Mutex<usize>,
+    }
+
+    impl MockKmsProvider {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                wrap_count: Mutex::new(0),
+                unwrap_count: Mutex::new(0),
+            })
+        }
+    }
+
+    impl KmsProvider for MockKmsProvider {
+        fn get_kek(&self) -> anyhow::Result<(KekId, Vec<u8>)> {
+            let kek_id = KekId("test".to_string());
+            Ok((kek_id, vec![0xAA; 32])) // Dummy KEK
+        }
+
+        fn get_kek_by_id(&self, _id: &KekId) -> anyhow::Result<Vec<u8>> {
+            Ok(vec![0xBB; 32]) // Dummy KEK
+        }
+
+        fn wrap_blob(&self, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
+            *self.wrap_count.lock().unwrap() += 1;
+            // Simple mock: prepend marker byte
+            let mut result = vec![0xFF];
+            result.extend_from_slice(plaintext);
+            Ok(result)
+        }
+
+        fn unwrap_blob(&self, ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
+            *self.unwrap_count.lock().unwrap() += 1;
+            // Simple mock: strip marker byte
+            if ciphertext.is_empty() || ciphertext[0] != 0xFF {
+                anyhow::bail!("invalid mock ciphertext")
+            }
+            Ok(ciphertext[1..].to_vec())
         }
     }
 }

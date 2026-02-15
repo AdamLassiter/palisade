@@ -105,14 +105,14 @@ impl TestRunner {
 // Original sqlshim / sqlsec tests
 // ────────────────────────────────────────────────────────────────────
 
-fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
+fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("sqlshim + sqlsec Extension Loading");
 
     let conn = Connection::open(":memory:")?;
 
     unsafe {
         conn.load_extension_enable()?;
-        match conn.load_extension("../sqlsec/target/release/libsqlsec", None::<&str>) {
+        match conn.load_extension(format!("../sqlsec/target/{mode}/libsqlsec"), None::<&str>) {
             Ok(()) => t.ok("loaded sqlsec extension"),
             Err(e) => {
                 t.fail("load sqlsec extension", &e);
@@ -307,7 +307,7 @@ fn run_sqlshim_tests(t: &mut TestRunner) -> Result<()> {
 // EVFS VFS tests (extension loading + encrypted I/O)
 // ────────────────────────────────────────────────────────────────────
 
-fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
+fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("EVFS VFS Registration");
 
     let tmp = TestDir::new("evfs-vfs-");
@@ -326,7 +326,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
         unsafe {
             loader.load_extension_enable()?;
             match loader.load_extension(
-                "../sqlevfs/target/release/libsqlevfs",
+                format!("../sqlevfs/target/{mode}/libsqlevfs"),
                 Some("sqlite3_evfs_init"),
             ) {
                 Ok(()) => t.ok("loaded sqlevfs extension"),
@@ -340,7 +340,8 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     }
 
     // ── Open a file-based DB through the encrypted VFS ──────────
-    t.section("EVFS Encrypted Database — Write");
+    t.section("EVFS Encrypted Database - Write");
+    println!("DB path: {}", db_path.display());
 
     let conn = Connection::open_with_flags_and_vfs(
         &db_path,
@@ -348,6 +349,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
         "evfs",
     )?;
     t.ok("opened DB with vfs=evfs");
+    println!("DB file created: {}", db_path.exists());
 
     // Set the reserve bytes so SQLite leaves room for the auth tag.
     // This must match what evfs expects (48 by default in EvfsBuilder,
@@ -398,7 +400,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner) -> Result<()> {
     drop(conn);
 
     // ── Reopen and verify persistence ───────────────────────────
-    t.section("EVFS Encrypted Database — Reopen & Read");
+    t.section("EVFS Encrypted Database - Reopen & Read");
 
     let conn =
         Connection::open_with_flags_and_vfs(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY, "evfs")?;
@@ -514,7 +516,7 @@ fn make_provider(keyfile: &Path) -> Arc<dyn KmsProvider> {
 }
 
 fn run_evfs_backup_tests(t: &mut TestRunner) {
-    t.section("EVFS Backup — Setup");
+    t.section("EVFS Backup - Setup");
 
     let tmp = TestDir::new("evfs-backup-");
     let src_key = tmp.write_keyfile("src.key", [0x11; 32]);
@@ -561,7 +563,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     t.ok(&format!("created encrypted source DB ({page_count} pages)"));
 
     // ── Create backup ───────────────────────────────────────────
-    t.section("EVFS Backup — Create");
+    t.section("EVFS Backup - Create");
 
     let bkp_provider = make_provider(&bkp_key);
     let mut backup_buf: Vec<u8> = Vec::new();
@@ -601,7 +603,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // ── Verify backup ───────────────────────────────────────────
-    t.section("EVFS Backup — Verify");
+    t.section("EVFS Backup - Verify");
 
     match backup::verify_backup(&mut Cursor::new(&backup_buf), bkp_provider.as_ref()) {
         Ok(result) => {
@@ -622,7 +624,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // ── Verify with wrong key fails ─────────────────────────────
-    t.section("EVFS Backup — Wrong Key Rejection");
+    t.section("EVFS Backup - Wrong Key Rejection");
 
     let wrong_provider = make_provider(&tgt_key); // different key
     match backup::verify_backup(&mut Cursor::new(&backup_buf), wrong_provider.as_ref()) {
@@ -639,13 +641,13 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
             ));
         }
         Err(_) => {
-            // Unwrap itself failed — also acceptable.
+            // Unwrap itself failed - also acceptable.
             t.ok("wrong key correctly rejected at DEK unwrap");
         }
     }
 
     // ── Restore backup ──────────────────────────────────────────
-    t.section("EVFS Backup — Restore");
+    t.section("EVFS Backup - Restore");
 
     let tgt_provider = make_provider(&tgt_key);
     let tgt_keyring = Arc::new(Keyring::new(tgt_provider.clone()));
@@ -705,7 +707,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // ── KEK rotation ────────────────────────────────────────────
-    t.section("EVFS Backup — KEK Rotation");
+    t.section("EVFS Backup - KEK Rotation");
 
     let backup_file = tmp.path("rotatable.evfs-backup");
     std::fs::write(&backup_file, &backup_buf).expect("write backup file");
@@ -745,7 +747,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 
     // ── Restore from rotated backup ─────────────────────────────
-    t.section("EVFS Backup — Restore After Rotation");
+    t.section("EVFS Backup - Restore After Rotation");
 
     let tgt2_key = tmp.write_keyfile("tgt2.key", [0x55; 32]);
     let tgt2_provider = make_provider(&tgt2_key);
@@ -792,7 +794,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
 // ────────────────────────────────────────────────────────────────────
 
 fn run_evfs_crypto_tests(t: &mut TestRunner) {
-    t.section("EVFS Crypto — Page Round-Trip");
+    t.section("EVFS Crypto - Page Round-Trip");
 
     let dek = sqlevfs::crypto::keys::Dek::generate();
     let reserve = 48;
@@ -831,7 +833,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     }
 
     // ── Wrong key ───────────────────────────────────────────────
-    t.section("EVFS Crypto — Wrong Key Rejection");
+    t.section("EVFS Crypto - Wrong Key Rejection");
 
     let dek2 = sqlevfs::crypto::keys::Dek::generate();
     let mut page = vec![0xCDu8; page_size];
@@ -843,7 +845,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     }
 
     // ── Wrong page number ───────────────────────────────────────
-    t.section("EVFS Crypto — Wrong Page Number Rejection");
+    t.section("EVFS Crypto - Wrong Page Number Rejection");
 
     let mut page = vec![0xEFu8; page_size];
     sqlevfs::crypto::page::encrypt_page(&mut page, 5, &dek, reserve).unwrap();
@@ -854,7 +856,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     }
 
     // ── Envelope wrap / unwrap ──────────────────────────────────
-    t.section("EVFS Crypto — Envelope Encryption");
+    t.section("EVFS Crypto - Envelope Encryption");
 
     let tmp = TestDir::new("evfs-envelope-");
     let kf = tmp.write_keyfile("envelope.key", [0x77; 32]);
@@ -897,7 +899,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
 // ────────────────────────────────────────────────────────────────────
 
 fn run_evfs_keyring_tests(t: &mut TestRunner) {
-    t.section("EVFS Keyring — Scope Resolution");
+    t.section("EVFS Keyring - Scope Resolution");
 
     let tmp = TestDir::new("evfs-keyring-");
     let kf = tmp.write_keyfile("keyring.key", [0x99; 32]);
@@ -956,7 +958,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
     }
 
     // ── Sidecar persistence ─────────────────────────────────────
-    t.section("EVFS Keyring — Sidecar Persistence");
+    t.section("EVFS Keyring - Sidecar Persistence");
 
     let fake_db = tmp.path("persist-test.db");
     std::fs::write(&fake_db, b"fake").unwrap();
@@ -979,7 +981,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
     }
 
     // ── Rewrap ──────────────────────────────────────────────────
-    t.section("EVFS Keyring — Rewrap All");
+    t.section("EVFS Keyring - Rewrap All");
 
     match keyring.rewrap_all() {
         Ok(()) => t.ok("rewrap_all succeeded"),
@@ -1010,10 +1012,10 @@ fn main() {
     let mut t = TestRunner::new();
 
     // ── sqlshim/sqlsec tests ────────────────────────────────────
-    let sqlsec_path = PathBuf::from(format!("../sqlsec/target/{}/libsqlsec.so", mode));
+    let sqlsec_path = PathBuf::from(format!("../sqlsec/target/{mode}/libsqlsec.so"));
 
     if sqlsec_path.exists() {
-        match run_sqlshim_tests(&mut t) {
+        match run_sqlshim_tests(&mut t, mode) {
             Ok(()) => {}
             Err(e) => t.fail("sqlshim test suite", &e),
         }
@@ -1038,7 +1040,7 @@ fn main() {
     let evfs_path = Path::new(&evfs_path_str);
 
     if evfs_path.exists() {
-        match run_evfs_vfs_tests(&mut t) {
+        match run_evfs_vfs_tests(&mut t, mode) {
             Ok(()) => {}
             Err(e) => t.fail("evfs VFS test suite", &e),
         }

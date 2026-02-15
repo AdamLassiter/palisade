@@ -9,8 +9,14 @@ use std::{
     path::Path,
 };
 
+use bincode::config;
+
 use crate::{
-    crypto::{envelope, keys::Dek, page as page_crypto},
+    crypto::{
+        envelope,
+        keys::{Dek, WrappedDek},
+        page as page_crypto,
+    },
     keyring::Keyring,
     kms::KmsProvider,
 };
@@ -19,14 +25,14 @@ const BACKUP_MAGIC: &[u8; 8] = b"EVFSBKUP";
 const BACKUP_VERSION: u32 = 1;
 
 /// Header at the start of every backup file.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(bincode::Encode, bincode::Decode)]
 pub struct BackupHeader {
     pub version: u32,
     pub page_size: u32,
     pub page_count: u32,
     pub reserve_size: u32,
     /// The backup DEK, wrapped under the backup KEK.
-    pub wrapped_dek: crate::crypto::keys::WrappedDek,
+    pub wrapped_dek: WrappedDek,
 }
 
 /// Create an encrypted backup.
@@ -61,7 +67,8 @@ pub fn create_backup(
         reserve_size: reserve as u32,
         wrapped_dek: wrapped,
     };
-    let header_bytes = bincode::serialize(&header)?;
+    let mut header_bytes = vec![0u8; 2048];
+    bincode::encode_into_slice(&header, &mut header_bytes, config::standard())?;
 
     // Write magic + header-length + header.
     dest.write_all(BACKUP_MAGIC)?;
@@ -117,7 +124,7 @@ pub fn restore_backup(
 
     let mut hdr_buf = vec![0u8; hdr_len];
     source.read_exact(&mut hdr_buf)?;
-    let header: BackupHeader = bincode::deserialize(&hdr_buf)?;
+    let header: BackupHeader = bincode::decode_from_slice(&hdr_buf, config::standard())?.0;
     anyhow::ensure!(
         header.version == BACKUP_VERSION,
         "unsupported backup version: {}",
@@ -176,7 +183,7 @@ pub fn verify_backup(
 
     let mut hdr_buf = vec![0u8; hdr_len];
     source.read_exact(&mut hdr_buf)?;
-    let header: BackupHeader = bincode::deserialize(&hdr_buf)?;
+    let header: BackupHeader = bincode::decode_from_slice(&hdr_buf, config::standard())?.0;
 
     let page_size = header.page_size as usize;
     let reserve = header.reserve_size as usize;
@@ -224,7 +231,7 @@ impl VerifyResult {
 /// Rotate backup encryption: re-wrap the backup DEK under a new KEK
 /// without re-encrypting every page.
 ///
-/// This is O(1) — only the header is rewritten.
+/// This is O(1) - only the header is rewritten.
 pub fn rotate_backup_kek(
     backup_path: &Path,
     old_kms: &dyn KmsProvider,
@@ -238,7 +245,7 @@ pub fn rotate_backup_kek(
 
     let hdr_len = u32::from_le_bytes(data[8..12].try_into()?) as usize;
     let hdr_buf = &data[12..12 + hdr_len];
-    let header: BackupHeader = bincode::deserialize(hdr_buf)?;
+    let header: BackupHeader = bincode::decode_from_slice(hdr_buf, config::standard())?.0;
 
     // Unwrap DEK with old KEK, re-wrap with new KEK.
     let dek = envelope::unwrap_dek(&header.wrapped_dek, old_kms)?;
@@ -248,7 +255,8 @@ pub fn rotate_backup_kek(
         wrapped_dek: new_wrapped,
         ..header
     };
-    let new_hdr_bytes = bincode::serialize(&new_header)?;
+    let mut new_hdr_bytes = vec![0u8; 2048];
+    bincode::encode_into_slice(&new_header, &mut new_hdr_bytes, config::standard())?;
 
     // Rewrite the file: magic + new header + same page data.
     let mut out = Vec::with_capacity(data.len());

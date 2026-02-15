@@ -3,13 +3,13 @@ use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A 256-bit data encryption key. Zeroized on drop.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
 pub struct Dek {
     bytes: [u8; 32],
 }
 
-/// A wrapped (ciphertext) DEK — safe to persist to disk.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// A wrapped (ciphertext) DEK - safe to persist to disk.
+#[derive(Clone, Debug, bincode::Encode, bincode::Decode, PartialEq, Eq)]
 pub struct WrappedDek {
     pub ciphertext: Vec<u8>,
     pub nonce: [u8; 12],
@@ -18,11 +18,11 @@ pub struct WrappedDek {
 }
 
 /// Opaque KEK identifier.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, bincode::Encode, bincode::Decode)]
 pub struct KekId(pub String);
 
 /// Which scope a DEK protects.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, bincode::Encode, bincode::Decode)]
 pub enum KeyScope {
     /// Whole database.
     Database,
@@ -35,7 +35,7 @@ pub enum KeyScope {
 impl Dek {
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
-        getrandom::getrandom(&mut bytes).expect("getrandom failed");
+        getrandom::fill(&mut bytes).expect("getrandom failed");
         Self { bytes }
     }
 

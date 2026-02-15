@@ -1,4 +1,4 @@
-# sqlsec — Label-Based Security for SQLite
+# sqlsec - Label-Based Security for SQLite
 
 `sqlsec` is a SQLite extension that implements **row-level and column-level security** using **security labels**, **logical views**, and **context attributes**.
 
@@ -256,7 +256,7 @@ SELECT sec_set_attr('role', 'admin');
 SELECT sec_set_attr('team', 'finance');
 ```
 
-Attributes are **multi-valued** — calling `sec_set_attr` with the same key adds to the set:
+Attributes are **multi-valued** - calling `sec_set_attr` with the same key adds to the set:
 
 ```sql
 SELECT sec_set_attr('role', 'admin');
@@ -388,11 +388,11 @@ SELECT * FROM employees;
 | `sec_define_level` | attr, name, value | Define a level for comparison operators |
 | `sec_register_table` | logical, physical, row_col, table_label, insert_label | Register a secured table |
 | `sec_set_attr` | key, value | Add an attribute to the context |
-| `sec_clear_context` | — | Clear all context attributes |
-| `sec_push_context` | — | Save current context to stack |
-| `sec_pop_context` | — | Restore context from stack |
-| `sec_refresh_views` | — | Rebuild views for current context |
-| `sec_assert_fresh` | — | Assert views are not stale |
+| `sec_clear_context` | - | Clear all context attributes |
+| `sec_push_context` | - | Save current context to stack |
+| `sec_pop_context` | - | Restore context from stack |
+| `sec_refresh_views` | - | Rebuild views for current context |
+| `sec_assert_fresh` | - | Assert views are not stale |
 | `sec_label_visible` | label_id | Check if a label is visible (internal) |
 
 ---
