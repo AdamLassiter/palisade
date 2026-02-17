@@ -15,9 +15,13 @@ jobs:
     steps:
       - name: Setup SQLite
         run: |
-          wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip && unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
-          echo "$(pwd)/sqlite-tools" >> $GITEA_PATH
-          apt install -y libsqlite3-dev
+          wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip
+          unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
+          # Ensure sqlite3 executable (adjust path if unzip creates a nested dir)
+          chmod +x sqlite-tools/sqlite3 || true
+          echo "$(pwd)/sqlite-tools" >> "$GITEA_PATH"
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+          echo "Wrote $(pwd)/sqlite-tools to $GITEA_PATH"
 
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
