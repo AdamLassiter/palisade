@@ -15,9 +15,13 @@ jobs:
     steps:
       - name: Setup SQLite
         run: |
-          wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip && unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
-          echo "$(pwd)/sqlite-tools" >> $GIHUB_PATH
-          apt install -y libsqlite3-dev
+          wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip
+          unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
+          # Ensure sqlite3 executable (adjust path if unzip creates a nested dir)
+          chmod +x sqlite-tools/sqlite3 || true
+          echo "$(pwd)/sqlite-tools" >> "$GITHUB_PATH"
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+          echo "Wrote $(pwd)/sqlite-tools to $GITHUB_PATH"
 
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -29,16 +33,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build workspace
-        run: cargo build --workspace --all-targets
+        run: ./cargow build
 
       - name: Run tests
-        run: cargo test --workspace
+        run: ./cargow test
 
       - name: Run formatting check
-        run: cargo fmt --all -- --check
+        run: ./cargow fmt --all -- --check
 
       - name: Run clippy lints
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: ./cargow clippy --workspace --all-targets -- -D warnings
   
   markdown:
     name: Markdown lint
