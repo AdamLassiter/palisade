@@ -315,3 +315,123 @@ pub fn apply_storage_policy(
 ) -> anyhow::Result<PolicyReport> {
     anyhow::bail!("apply_storage_policy requires crate feature `rusqlite`")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_ramdisk_fstype_recognizes_tmpfs_and_ramfs() {
+        assert!(is_ramdisk_fstype("tmpfs"));
+        assert!(is_ramdisk_fstype("ramfs"));
+
+        assert!(!is_ramdisk_fstype("ext4"));
+        assert!(!is_ramdisk_fstype("xfs"));
+        assert!(!is_ramdisk_fstype("apfs"));
+        assert!(!is_ramdisk_fstype("unknown"));
+    }
+
+    #[test]
+    fn canonical_or_original_returns_original_for_nonexistent_path() {
+        let p = Path::new("this/definitely/does/not/exist");
+        let got = canonical_or_original(p);
+        assert_eq!(got, p.to_path_buf());
+    }
+
+    #[test]
+    fn enforce_or_fallback_warn_is_ok() {
+        let res = enforce_or_fallback(Enforce::Warn, "hello");
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn enforce_or_fallback_error_is_err() {
+        let res = enforce_or_fallback(Enforce::Error, "boom");
+        assert!(res.is_err());
+    }
+
+    #[cfg(feature = "rusqlite")]
+    mod rusqlite_tests {
+        use super::*;
+
+        fn pragma_journal_mode(conn: &rusqlite::Connection) -> String {
+            conn.query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        fn pragma_temp_store(conn: &rusqlite::Connection) -> i64 {
+            conn.query_row("PRAGMA temp_store;", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        #[test]
+        fn apply_storage_policy_default_sets_memory_modes() {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+
+            // Any path is fine; only the parent directory is used.
+            let db_path = std::env::temp_dir().join("policy_default_test.db");
+
+            let policy = StoragePolicy::default();
+            let report = apply_storage_policy(&conn, &db_path, &policy).unwrap();
+
+            assert_eq!(report.applied_journal_mode.as_deref(), Some("MEMORY"));
+            assert_eq!(report.applied_temp_store.as_deref(), Some("MEMORY"));
+
+            // SQLite typically reports lower-case strings; compare case-insensitively.
+            let jm = pragma_journal_mode(&conn);
+            assert_eq!(jm.to_ascii_uppercase(), "MEMORY");
+
+            let ts = pragma_temp_store(&conn);
+            assert_eq!(ts, 2, "temp_store=2 means MEMORY");
+
+            // Best-effort notes should be present when PRAGMA queries succeed.
+            assert!(
+                report.notes.iter().any(|n| n.contains("sqlite reports journal_mode=")),
+                "expected journal_mode note, got notes={:?}",
+                report.notes
+            );
+            assert!(
+                report.notes.iter().any(|n| n.contains("sqlite reports temp_store=")),
+                "expected temp_store note, got notes={:?}",
+                report.notes
+            );
+        }
+
+        #[test]
+        fn apply_storage_policy_off_journal_mode() {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            let db_path = std::env::temp_dir().join("policy_off_test.db");
+
+            let policy = StoragePolicy {
+                journal_mode: JournalModePolicy::Off,
+                temp_store: TempStorePolicy::Memory,
+                enforce: Enforce::Warn,
+            };
+
+            let report = apply_storage_policy(&conn, &db_path, &policy).unwrap();
+
+            assert_eq!(report.applied_journal_mode.as_deref(), Some("OFF"));
+            assert_eq!(pragma_journal_mode(&conn).to_ascii_uppercase(), "OFF");
+
+            assert_eq!(report.applied_temp_store.as_deref(), Some("MEMORY"));
+            assert_eq!(pragma_temp_store(&conn), 2);
+        }
+
+        #[test]
+        fn apply_storage_policy_memory_journal_mode() {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            let db_path = std::env::temp_dir().join("policy_memory_test.db");
+
+            let policy = StoragePolicy {
+                journal_mode: JournalModePolicy::Memory,
+                temp_store: TempStorePolicy::Memory,
+                enforce: Enforce::Warn,
+            };
+
+            let report = apply_storage_policy(&conn, &db_path, &policy).unwrap();
+
+            assert_eq!(report.applied_journal_mode.as_deref(), Some("MEMORY"));
+            assert_eq!(pragma_journal_mode(&conn).to_ascii_uppercase(), "MEMORY");
+        }
+    }
+}

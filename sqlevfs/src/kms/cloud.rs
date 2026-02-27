@@ -1,3 +1,4 @@
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -170,113 +171,373 @@ impl KmsProvider for CloudKmsProvider {
 }
 
 fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
-    // Minimal base64 decode without pulling in another crate.
-    // In production, use the `base64` crate.
-    use std::io::Read;
-    let mut decoder = base64_reader::DecoderReader::new(input.as_bytes());
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
-    Ok(out)
+    Ok(BASE64_STANDARD.decode(input.as_bytes())?)
 }
 
 fn base64_encode(input: &[u8]) -> String {
-    base64_writer::encode(input)
+    BASE64_STANDARD.encode(input)
 }
 
-/// Minimal inline base64 so we don't need an extra crate.
-mod base64_reader {
-    use std::io::{self, Read};
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        sync::{
+            Arc,
+            Mutex as StdMutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+    };
 
-    fn decode_byte(b: u8) -> Option<u8> {
-        match b {
-            b'A'..=b'Z' => Some(b - b'A'),
-            b'a'..=b'z' => Some(b - b'a' + 26),
-            b'0'..=b'9' => Some(b - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
+    use anyhow::Result;
+
+    use super::*;
+
+    fn spawn_mock_kms_server() -> (String, MockState) {
+        #[derive(Clone, Default)]
+        struct Inner {
+            generate_calls: Arc<AtomicUsize>,
+            decrypt_calls: Arc<AtomicUsize>,
+            encrypt_calls: Arc<AtomicUsize>,
+            // ciphertext_blob_b64 -> plaintext_b64
+            decrypt_map: Arc<StdMutex<HashMap<String, String>>>,
+            // if set, GenerateDataKey returns a plaintext with this length
+            gdk_plaintext_len: Arc<StdMutex<Option<usize>>>,
         }
-    }
 
-    pub struct DecoderReader<'a> {
-        input: &'a [u8],
-        pos: usize,
-    }
+        #[derive(Clone, Default)]
+        struct State(Inner);
 
-    impl<'a> DecoderReader<'a> {
-        pub fn new(input: &'a [u8]) -> Self {
-            Self { input, pos: 0 }
+        #[derive(Clone)]
+        struct OutState {
+            generate_calls: Arc<AtomicUsize>,
+            decrypt_calls: Arc<AtomicUsize>,
+            encrypt_calls: Arc<AtomicUsize>,
+            decrypt_map: Arc<StdMutex<HashMap<String, String>>>,
+            gdk_plaintext_len: Arc<StdMutex<Option<usize>>>,
         }
-    }
 
-    impl Read for DecoderReader<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let mut written = 0;
-            while written < buf.len() {
-                // Skip whitespace / padding.
-                while self.pos < self.input.len()
-                    && (self.input[self.pos] == b'=' || self.input[self.pos].is_ascii_whitespace())
-                {
-                    self.pos += 1;
+        impl OutState {
+            fn set_generate_plaintext_len(&self, len: Option<usize>) {
+                *self.gdk_plaintext_len.lock().unwrap() = len;
+            }
+        }
+
+        fn write_json_ok(mut stream: TcpStream, body: serde_json::Value) {
+            let body = body.to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/x-amz-json-1.1\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+
+        fn read_http_request(mut stream: &TcpStream) -> Result<(HashMap<String, String>, Vec<u8>)> {
+            use std::collections::HashMap;
+
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+
+            // Read until we have headers.
+            let header_end;
+            loop {
+                let n = stream.take(4096).read(&mut tmp)?;
+                if n == 0 {
+                    return Ok((HashMap::new(), Vec::new()));
                 }
-                if self.pos >= self.input.len() {
+                buf.extend_from_slice(&tmp[..n]);
+
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = pos;
                     break;
                 }
-                // Need up to 4 characters for a group.
-                let mut group = [0u8; 4];
-                let mut count = 0;
-                while count < 4 && self.pos < self.input.len() {
-                    let b = self.input[self.pos];
-                    self.pos += 1;
-                    if b == b'=' || b.is_ascii_whitespace() {
-                        continue;
-                    }
-                    if let Some(val) = decode_byte(b) {
-                        group[count] = val;
-                        count += 1;
-                    }
-                }
-                if count >= 2 && written < buf.len() {
-                    buf[written] = (group[0] << 2) | (group[1] >> 4);
-                    written += 1;
-                }
-                if count >= 3 && written < buf.len() {
-                    buf[written] = (group[1] << 4) | (group[2] >> 2);
-                    written += 1;
-                }
-                if count >= 4 && written < buf.len() {
-                    buf[written] = (group[2] << 6) | group[3];
-                    written += 1;
+                // Avoid unbounded growth in tests.
+                if buf.len() > 1024 * 1024 {
+                    return Ok((HashMap::new(), Vec::new()));
                 }
             }
-            Ok(written)
+
+            let head = &buf[..header_end];
+            let mut rest = buf[header_end + 4..].to_vec();
+
+            let head_str = String::from_utf8_lossy(head);
+            let mut headers = HashMap::new();
+
+            for (i, line) in head_str.lines().enumerate() {
+                if i == 0 {
+                    continue; // request line
+                }
+                if let Some((k, v)) = line.split_once(':') {
+                    headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+                }
+            }
+
+            let content_length = headers
+                .get("content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            // Read the remaining body bytes (exactly content_length).
+            while rest.len() < content_length {
+                let n = (&mut stream).read(&mut tmp)?;
+                if n == 0 {
+                    break;
+                }
+                rest.extend_from_slice(&tmp[..n]);
+            }
+            rest.truncate(content_length);
+
+            Ok((headers, rest))
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+
+        let state = State::default();
+
+        let out = OutState {
+            generate_calls: state.0.generate_calls.clone(),
+            decrypt_calls: state.0.decrypt_calls.clone(),
+            encrypt_calls: state.0.encrypt_calls.clone(),
+            decrypt_map: state.0.decrypt_map.clone(),
+            gdk_plaintext_len: state.0.gdk_plaintext_len.clone(),
+        };
+
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (headers, body) = read_http_request(&stream).unwrap();
+                let target = headers.get("x-amz-target").cloned().unwrap_or_default();
+
+                if target.contains("GenerateDataKey") {
+                    state.0.generate_calls.fetch_add(1, Ordering::SeqCst);
+
+                    let len = state.0.gdk_plaintext_len.lock().unwrap().unwrap_or(32);
+
+                    let plaintext = vec![0xAB; len];
+                    let plaintext_b64 = base64_encode(&plaintext);
+
+                    // For tests, just use a deterministic ciphertext blob.
+                    let ciphertext_blob_raw = b"ciphertext-blob";
+                    let ciphertext_blob_b64 = base64_encode(ciphertext_blob_raw);
+
+                    // Allow decrypt of that ciphertext blob.
+                    state
+                        .0
+                        .decrypt_map
+                        .lock()
+                        .unwrap()
+                        .insert(ciphertext_blob_b64.clone(), plaintext_b64.clone());
+
+                    write_json_ok(
+                        stream,
+                        serde_json::json!({
+                            "KeyId": "test-key-id",
+                            "Plaintext": plaintext_b64,
+                            "CiphertextBlob": ciphertext_blob_b64,
+                        }),
+                    );
+                    continue;
+                }
+
+                if target.contains("Decrypt") {
+                    state.0.decrypt_calls.fetch_add(1, Ordering::SeqCst);
+
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let ciphertext_blob = v
+                        .get("CiphertextBlob")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let plaintext_b64 = state
+                        .0
+                        .decrypt_map
+                        .lock()
+                        .unwrap()
+                        .get(&ciphertext_blob)
+                        .cloned()
+                        .unwrap_or_else(|| base64_encode(b""));
+
+                    write_json_ok(
+                        stream,
+                        serde_json::json!({
+                            "Plaintext": plaintext_b64,
+                        }),
+                    );
+                    continue;
+                }
+
+                if target.contains("Encrypt") {
+                    state.0.encrypt_calls.fetch_add(1, Ordering::SeqCst);
+
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let plaintext_b64 = v.get("Plaintext").and_then(|x| x.as_str()).unwrap_or("");
+
+                    // Return a deterministic ciphertext blob derived from plaintext_b64.
+                    // Ciphertext blob (raw bytes) = b"ct:" + decoded(plaintext_b64)
+                    let pt = base64_decode(plaintext_b64).unwrap_or_default();
+                    let mut ct = b"ct:".to_vec();
+                    ct.extend_from_slice(&pt);
+                    let ciphertext_blob_b64 = base64_encode(&ct);
+
+                    // And allow decrypt of that ciphertext blob.
+                    state
+                        .0
+                        .decrypt_map
+                        .lock()
+                        .unwrap()
+                        .insert(ciphertext_blob_b64.clone(), plaintext_b64.to_string());
+
+                    write_json_ok(
+                        stream,
+                        serde_json::json!({
+                            "CiphertextBlob": ciphertext_blob_b64,
+                        }),
+                    );
+                    continue;
+                }
+
+                // Unknown target: still respond with something.
+                write_json_ok(stream, serde_json::json!({}));
+            }
+        });
+
+        (
+            url,
+            MockState {
+                generate_calls: out.generate_calls,
+                decrypt_calls: out.decrypt_calls,
+                encrypt_calls: out.encrypt_calls,
+                decrypt_map: out.decrypt_map,
+                gdk_plaintext_len: out.gdk_plaintext_len,
+            },
+        )
+    }
+
+    #[derive(Clone)]
+    struct MockState {
+        generate_calls: Arc<AtomicUsize>,
+        decrypt_calls: Arc<AtomicUsize>,
+        encrypt_calls: Arc<AtomicUsize>,
+        decrypt_map: Arc<StdMutex<HashMap<String, String>>>,
+        gdk_plaintext_len: Arc<StdMutex<Option<usize>>>,
+    }
+
+    impl MockState {
+        fn set_generate_plaintext_len(&self, len: Option<usize>) {
+            *self.gdk_plaintext_len.lock().unwrap() = len;
+        }
+
+        fn generate_calls(&self) -> usize {
+            self.generate_calls.load(Ordering::SeqCst)
+        }
+
+        fn decrypt_calls(&self) -> usize {
+            self.decrypt_calls.load(Ordering::SeqCst)
+        }
+
+        fn encrypt_calls(&self) -> usize {
+            self.encrypt_calls.load(Ordering::SeqCst)
         }
     }
-}
 
-mod base64_writer {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    #[test]
+    fn base64_roundtrip_works() {
+        let data = b"\x00\x01\x02hello\xff";
+        let b64 = base64_encode(data);
+        let decoded = base64_decode(&b64).unwrap();
+        assert_eq!(decoded, data);
+    }
 
-    pub fn encode(input: &[u8]) -> String {
-        let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
-        for chunk in input.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-            let triple = (b0 << 16) | (b1 << 8) | b2;
-            out.push(TABLE[((triple >> 18) & 0x3F) as usize]);
-            out.push(TABLE[((triple >> 12) & 0x3F) as usize]);
-            if chunk.len() > 1 {
-                out.push(TABLE[((triple >> 6) & 0x3F) as usize]);
-            } else {
-                out.push(b'=');
-            }
-            if chunk.len() > 2 {
-                out.push(TABLE[(triple & 0x3F) as usize]);
-            } else {
-                out.push(b'=');
-            }
-        }
-        String::from_utf8(out).unwrap()
+    #[test]
+    fn get_kek_is_cached_after_first_call() {
+        let (endpoint, state) = spawn_mock_kms_server();
+        let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
+
+        let (id1, k1) = p.get_kek().unwrap();
+        let (id2, k2) = p.get_kek().unwrap();
+
+        assert_eq!(id1.0, id2.0);
+        assert_eq!(k1, k2);
+
+        assert_eq!(
+            state.generate_calls(),
+            1,
+            "should only call GenerateDataKey once"
+        );
+        assert_eq!(state.decrypt_calls(), 0);
+        assert_eq!(state.encrypt_calls(), 0);
+    }
+
+    #[test]
+    fn get_kek_by_id_hits_cache_when_id_matches() {
+        let (endpoint, state) = spawn_mock_kms_server();
+        let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
+
+        let (id, k1) = p.get_kek().unwrap();
+        let k2 = p.get_kek_by_id(&id).unwrap();
+
+        assert_eq!(k1, k2);
+        assert_eq!(state.generate_calls(), 1);
+        assert_eq!(state.decrypt_calls(), 0, "cache should avoid Decrypt call");
+    }
+
+    #[test]
+    fn get_kek_by_id_calls_decrypt_when_id_not_cached() {
+        let (endpoint, state) = spawn_mock_kms_server();
+        let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
+
+        // Put something into the decrypt map so decrypt returns non-empty.
+        let plaintext = vec![0x11; 32];
+        let plaintext_b64 = base64_encode(&plaintext);
+        let ciphertext_blob_b64 = base64_encode(b"some-other-blob");
+        state
+            .decrypt_map
+            .lock()
+            .unwrap()
+            .insert(ciphertext_blob_b64.clone(), plaintext_b64);
+
+        let k = p.get_kek_by_id(&KekId(ciphertext_blob_b64)).unwrap();
+        assert_eq!(k, plaintext);
+        assert_eq!(state.decrypt_calls(), 1);
+    }
+
+    #[test]
+    fn wrap_and_unwrap_roundtrip() {
+        let (endpoint, state) = spawn_mock_kms_server();
+        let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
+
+        let pt = b"top secret bytes".to_vec();
+        let ct = p.wrap_blob(&pt).unwrap();
+        let got = p.unwrap_blob(&ct).unwrap();
+
+        assert_eq!(got, pt);
+        assert_eq!(state.encrypt_calls(), 1);
+        assert_eq!(state.decrypt_calls(), 1);
+    }
+
+    #[test]
+    fn generate_data_key_errors_on_wrong_length_key() {
+        let (endpoint, state) = spawn_mock_kms_server();
+        state.set_generate_plaintext_len(Some(31)); // not 32
+
+        let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
+        let err = p.get_kek().unwrap_err();
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("expected 32"),
+            "unexpected error message: {msg}"
+        );
     }
 }

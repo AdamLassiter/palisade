@@ -12,7 +12,7 @@ Key behaviors and constraints:
 
 - **Page 1 is left plaintext** so SQLite can read the schema and open the database normally. Pages `2..` are encrypted.
 - The encryption scheme uses **per-page AEAD (AES-256-GCM)** and stores the authentication tag (and an `EVFSv1` marker) in the **reserved bytes** at the end of each page.
-- Stock SQLite (e.g. 3.45.x) does **not** support `PRAGMA reserve_size`. `evfs` therefore ensures the SQLite header’s reserved-bytes field is set when creating a new DB, so SQLite doesn’t use the reserved tail bytes for real data.
+- Stock SQLite (e.g. 3.45.x) does **not** support `PRAGMA reserve_size`. `evfs` therefore ensures the SQLite header's reserved-bytes field is set when creating a new DB, so SQLite doesn't use the reserved tail bytes for real data.
 - SQLite does **partial reads/writes**; `evfs` handles this with a read-modify-write path (decrypt full page → patch → re-encrypt).
 
 If you change page size or reserved space, you can break compatibility with existing databases.
