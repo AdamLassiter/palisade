@@ -1,0 +1,78 @@
+syntax = "proto3";
+package sqlevfs.raft;
+
+// ── Vote ────────────────────────────────────────────────────────────
+
+message VoteRequest {
+    uint64 term          = 1;
+    uint64 candidate_id  = 2;
+    uint64 last_log_index = 3;
+    uint64 last_log_term  = 4;
+}
+
+message VoteResponse {
+    uint64 term         = 1;
+    bool   vote_granted = 2;
+}
+
+// ── Append Entries ───────────────────────────────────────────────────
+
+message WalFrame {
+    // Byte offset within the WAL file where this frame begins.
+    int64  wal_offset = 1;
+    // Raw (already-encrypted) frame bytes (page_size + 24).
+    bytes  data       = 2;
+    // 1-based page number this frame covers.
+    uint32 page_no    = 3;
+}
+
+message LogEntry {
+    uint64   index = 1;
+    uint64   term  = 2;
+    WalFrame frame = 3;
+}
+
+message AppendEntriesRequest {
+    uint64         term          = 1;
+    uint64         leader_id     = 2;
+    uint64         prev_log_index = 3;
+    uint64         prev_log_term  = 4;
+    repeated LogEntry entries    = 5;
+    uint64         leader_commit  = 6;
+}
+
+message AppendEntriesResponse {
+    uint64 term    = 1;
+    bool   success = 2;
+    // Conflict hint: follower's last known good index.
+    uint64 conflict_index = 3;
+}
+
+// ── Snapshot ─────────────────────────────────────────────────────────
+
+message SnapshotMetadata {
+    uint64 last_included_index = 1;
+    uint64 last_included_term  = 2;
+}
+
+message InstallSnapshotRequest {
+    uint64           term       = 1;
+    uint64           leader_id  = 2;
+    SnapshotMetadata metadata   = 3;
+    // Full serialised SQLite DB page (chunk streaming).
+    bytes            chunk      = 4;
+    uint64           chunk_offset = 5;
+    bool             done       = 6;
+}
+
+message InstallSnapshotResponse {
+    uint64 term = 1;
+}
+
+// ── Raft RPC service ─────────────────────────────────────────────────
+
+service RaftService {
+    rpc RequestVote       (VoteRequest)              returns (VoteResponse);
+    rpc AppendEntries     (AppendEntriesRequest)     returns (AppendEntriesResponse);
+    rpc InstallSnapshot   (InstallSnapshotRequest)   returns (InstallSnapshotResponse);
+}

@@ -24,10 +24,16 @@ env_logger = "0.11"
 ureq = { version = "2", features = ["json"] }
 parking_lot = "0.12"
 libc = "0.2"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tonic = "0.12"
+openraft = { version = "0.9", features = ["serde"] }
+futures = "0.3"
 rusqlite = { version = "0.38", optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"
+tonic-build = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

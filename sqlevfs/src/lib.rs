@@ -82,9 +82,12 @@ impl EvfsBuilder {
         let keyring = Arc::new(Keyring::new(self.provider));
         vfs::register_evfs(
             &self.name,
-            keyring.clone(),
-            self.page_size,
-            self.reserve_size,
+            vfs::EvfsConfig {
+                keyring: keyring.clone(),
+                page_size: self.page_size,
+                reserve_size: self.reserve_size,
+                raft: None,
+            },
         )?;
         Ok(keyring)
     }
