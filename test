@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Default mode
-MODE="release"
+MODE="debug"
 
 # Parse argument
 case "${1:-}" in
