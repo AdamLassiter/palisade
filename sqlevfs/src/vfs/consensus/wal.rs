@@ -28,7 +28,7 @@ pub struct WalFrameEntry {
     pub data: Vec<u8>,
 }
 
-// ── WAL file state (per file descriptor) ────────────────────────────
+// -- WAL file state (per file descriptor) ----------------------------
 
 /// Per-WAL-file-descriptor state owned by `EvfsFile`.
 ///
@@ -89,7 +89,7 @@ impl WalFileState {
     }
 }
 
-// ── In-memory log storage ────────────────────────────────────────────
+// -- In-memory log storage --------------------------------------------
 // NOTE: Replace with a persistent implementation (e.g. backed by a
 // separate RocksDB / sled instance) before running in production.
 
@@ -106,7 +106,7 @@ struct LogStoreMeta {
     vote: Option<Vote<NodeId>>,
 }
 
-// ── In-memory state machine ──────────────────────────────────────────
+// -- In-memory state machine ------------------------------------------
 
 type ApplyFn = Arc<dyn Fn(i64, u32, &[u8]) -> Result<()> + Send + Sync>;
 
@@ -143,7 +143,7 @@ impl WalStateMachine {
     }
 }
 
-// ── openraft RaftStorage implementation ─────────────────────────────
+// -- openraft RaftStorage implementation -----------------------------
 //
 // openraft 0.9 seals `RaftLogStorage` and `RaftStateMachine` so they
 // can only be implemented via the `Adaptor` wrapper around

@@ -21,7 +21,7 @@ use crate::vfs::consensus::{
     wal::WalFrameEntry,
 };
 
-// ── gRPC service implementation ──────────────────────────────────────
+// -- gRPC service implementation --------------------------------------
 
 pub struct RaftGrpcService {
     raft: super::RaftNode,

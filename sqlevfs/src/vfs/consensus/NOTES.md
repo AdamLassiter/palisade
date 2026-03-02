@@ -1,27 +1,27 @@
 # 1 High-Level Architecture
 
 ```
-        ┌───────────────────────────────┐
+        ┌-------------------------------┐
         │  Application (unmodified)     │
-        └──────────────┬────────────────┘
+        └--------------┬----------------┘
                        │
                 SQLite API calls
                        │
-        ┌──────────────▼───────────────┐
+        ┌--------------▼---------------┐
         │  Custom VFS Layer (LazySQL)  │
         │ - WAL intercept              │
         │ - Encrypted pages            │
         │ - Replication hooks          │
-        └──────────────┬───────────────┘
+        └--------------┬---------------┘
                        │
             Local SQLite Database
                        │
-           ┌───────────▼───────────┐
+           ┌-----------▼-----------┐
            │ Raft Node / Log Layer │
            │ - Append WAL frames   │
            │ - Leader election     │
            │ - Log replication     │
-           └───────────┬───────────┘
+           └-----------┬-----------┘
                        │
               Replicate to followers
                        │

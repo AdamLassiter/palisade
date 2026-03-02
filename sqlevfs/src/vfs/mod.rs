@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-// ── Our extended file struct ────────────────────────────────────────
+// -- Our extended file struct ----------------------------------------
 
 /// Must start with `sqlite3_file` so SQLite can cast between them.
 #[repr(C)]
@@ -50,7 +50,7 @@ struct EvfsFile {
     raft_handle: *mut Option<Arc<RaftHandle>>,
 }
 
-// ── Global VFS context ───────────────────────────────────────────────
+// -- Global VFS context -----------------------------------------------
 
 struct EvfsGlobal {
     cryptor: PageCryptor,
@@ -66,7 +66,7 @@ struct EvfsGlobal {
 unsafe impl Send for EvfsGlobal {}
 unsafe impl Sync for EvfsGlobal {}
 
-// ── Page offset helpers ─────────────────────────────────────────────
+// -- Page offset helpers ---------------------------------------------
 
 #[inline]
 fn page_no_for_offset(i_ofst: i64, page_size: i64) -> u32 {
@@ -78,7 +78,7 @@ fn page_start_offset(page_no: u32, page_size: i64) -> i64 {
     (page_no as i64 - 1) * page_size
 }
 
-// ── Inner file helpers ──────────────────────────────────────────────
+// -- Inner file helpers ----------------------------------------------
 
 unsafe fn inner_filesize(inner: *mut sqlite3_file) -> Option<i64> {
     unsafe {
@@ -88,7 +88,7 @@ unsafe fn inner_filesize(inner: *mut sqlite3_file) -> Option<i64> {
     }
 }
 
-// ── Page-1 initialisation ───────────────────────────────────────────
+// -- Page-1 initialisation -------------------------------------------
 
 fn try_reserve_page1(cryptor: &PageCryptor, inner: *mut sqlite3_file) -> c_int {
     unsafe {
@@ -156,7 +156,7 @@ fn try_reserve_page1(cryptor: &PageCryptor, inner: *mut sqlite3_file) -> c_int {
     }
 }
 
-// ── xOpen ───────────────────────────────────────────────────────────
+// -- xOpen -----------------------------------------------------------
 
 unsafe extern "C" fn evfs_open(
     vfs: *mut sqlite3_vfs,
@@ -236,7 +236,7 @@ unsafe extern "C" fn evfs_open(
     }
 }
 
-// ── xClose ──────────────────────────────────────────────────────────
+// -- xClose ----------------------------------------------------------
 
 unsafe extern "C" fn evfs_close(file: *mut sqlite3_file) -> c_int {
     unsafe {
@@ -269,7 +269,7 @@ unsafe extern "C" fn evfs_close(file: *mut sqlite3_file) -> c_int {
     }
 }
 
-// ── xRead ───────────────────────────────────────────────────────────
+// -- xRead -----------------------------------------------------------
 
 unsafe extern "C" fn evfs_read(
     file: *mut sqlite3_file,
@@ -351,7 +351,7 @@ unsafe extern "C" fn evfs_read(
     }
 }
 
-// ── xWrite ──────────────────────────────────────────────────────────
+// -- xWrite ----------------------------------------------------------
 
 unsafe extern "C" fn evfs_write(
     file: *mut sqlite3_file,
@@ -475,7 +475,7 @@ unsafe extern "C" fn evfs_write(
     }
 }
 
-// ── xSync ───────────────────────────────────────────────────────────
+// -- xSync -----------------------------------------------------------
 //
 // This is the natural durability barrier.  On the leader, we drain
 // all buffered WAL frames into Raft before returning SQLITE_OK so
@@ -541,7 +541,7 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
     }
 }
 
-// ── xLock ───────────────────────────────────────────────────────────
+// -- xLock -----------------------------------------------------------
 //
 // On follower nodes we refuse RESERVED lock escalation so SQLite
 // never attempts to write (WAL) on a non-leader.
@@ -564,7 +564,7 @@ unsafe extern "C" fn evfs_lock(file: *mut sqlite3_file, lock_type: c_int) -> c_i
     }
 }
 
-// ── Forwarded I/O methods ───────────────────────────────────────────
+// -- Forwarded I/O methods -------------------------------------------
 
 macro_rules! forward_io {
     ($name:ident ( $($arg:ident : $ty:ty),* ) -> c_int) => {
@@ -650,7 +650,7 @@ unsafe extern "C" fn evfs_device_characteristics(file: *mut sqlite3_file) -> c_i
     }
 }
 
-// ── Forwarded VFS methods ───────────────────────────────────────────
+// -- Forwarded VFS methods -------------------------------------------
 //
 // The macro delegates to the inner VFS using the correct sqlite3_vfs
 // field names (xDelete, xAccess, etc.) while exposing our own
@@ -708,7 +708,7 @@ unsafe extern "C" fn evfs_current_time_int64(vfs: *mut sqlite3_vfs, p_time: *mut
     }
 }
 
-// ── Registration ────────────────────────────────────────────────────
+// -- Registration ----------------------------------------------------
 
 /// Configuration for VFS registration.
 pub struct EvfsConfig {
@@ -795,7 +795,7 @@ pub fn register_evfs(name: &str, cfg: EvfsConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

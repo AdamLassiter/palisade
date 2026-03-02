@@ -6,17 +6,17 @@ use std::{
 };
 
 use rusqlite::{Connection, OpenFlags, Result, params};
-// ── Imports from the evfs crate for backup API testing ──────────────
-use sqlevfs::backup;
+// -- Imports from the evfs crate for backup API testing --------------
+use sqlevfs::{backup, vfs::consensus::RaftConfig};
 use sqlevfs::{
     crypto::keys::KeyScope,
     keyring::Keyring,
     kms::{KmsProvider, local::DeviceKeyProvider},
 };
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // Helpers
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 struct TestDir {
     dir: tempfile::TempDir,
@@ -101,9 +101,9 @@ impl TestRunner {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // Original sqlshim / sqlsec tests
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("sqlshim + sqlsec Extension Loading");
@@ -123,7 +123,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         conn.load_extension_disable()?;
     }
 
-    // ── DEFINE LABEL ────────────────────────────────────────────
+    // -- DEFINE LABEL --------------------------------------------
     t.section("DEFINE LABEL");
     for stmt in [
         "DEFINE LABEL 'true';",
@@ -137,7 +137,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── DEFINE LEVEL ────────────────────────────────────────────
+    // -- DEFINE LEVEL --------------------------------------------
     t.section("DEFINE LEVEL");
     for (name, val) in [
         ("public", 0),
@@ -152,7 +152,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── CREATE POLICY ───────────────────────────────────────────
+    // -- CREATE POLICY -------------------------------------------
     t.section("CREATE POLICY");
     let policies = [
         (
@@ -180,14 +180,14 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── DROP POLICY ─────────────────────────────────────────────
+    // -- DROP POLICY ---------------------------------------------
     t.section("DROP POLICY");
     match conn.execute_batch("DROP POLICY invoices_write ON invoices;") {
         Ok(()) => t.ok("DROP POLICY"),
         Err(e) => t.fail("DROP POLICY", &e),
     }
 
-    // ── SET / CLEAR / PUSH / POP CONTEXT ────────────────────────
+    // -- SET / CLEAR / PUSH / POP CONTEXT ------------------------
     t.section("Context Management");
     for stmt in [
         "SET CONTEXT role = 'admin';",
@@ -205,14 +205,14 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── REFRESH SECURE VIEWS ────────────────────────────────────
+    // -- REFRESH SECURE VIEWS ------------------------------------
     t.section("REFRESH SECURE VIEWS");
     match conn.execute_batch("REFRESH SECURE VIEWS;") {
         Ok(()) => t.ok("REFRESH SECURE VIEWS"),
         Err(e) => t.fail("REFRESH SECURE VIEWS", &e),
     }
 
-    // ── REGISTER SECURE TABLE ───────────────────────────────────
+    // -- REGISTER SECURE TABLE -----------------------------------
     t.section("REGISTER SECURE TABLE");
     match conn.execute_batch(
         r#"
@@ -251,7 +251,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         Err(e) => t.fail("REGISTER SECURE TABLE (with labels)", &e),
     }
 
-    // ── CREATE SECURE VIEW ──────────────────────────────────────
+    // -- CREATE SECURE VIEW --------------------------------------
     t.section("CREATE SECURE VIEW");
     match conn.execute_batch(
         r#"
@@ -265,7 +265,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         Err(e) => t.fail("CREATE SECURE VIEW", &e),
     }
 
-    // ── SET COLUMN SECURITY ─────────────────────────────────────
+    // -- SET COLUMN SECURITY -------------------------------------
     t.section("SET COLUMN SECURITY");
     for stmt in [
         "SET COLUMN SECURITY employees.salary READ 'role=manager';",
@@ -278,7 +278,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── Stub Features ───────────────────────────────────────────
+    // -- Stub Features -------------------------------------------
     t.section("Stub Features (audit / explain policy)");
     for stmt in [
         "ENABLE AUDIT ON users;",
@@ -291,7 +291,7 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── Normal SQL passthrough ──────────────────────────────────
+    // -- Normal SQL passthrough ----------------------------------
     t.section("Normal SQL Passthrough");
     conn.execute_batch("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT);")?;
     conn.execute_batch("INSERT INTO test_table (id, name) VALUES (1, 'test');")?;
@@ -303,9 +303,9 @@ fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     Ok(())
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // EVFS VFS tests (extension loading + encrypted I/O)
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("EVFS VFS Registration");
@@ -339,7 +339,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    // ── Open a file-based DB through the encrypted VFS ──────────
+    // -- Open a file-based DB through the encrypted VFS ----------
     t.section("EVFS Encrypted Database - Write");
     println!("DB path: {}", db_path.display());
 
@@ -399,7 +399,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     // Close the connection.
     drop(conn);
 
-    // ── Reopen and verify persistence ───────────────────────────
+    // -- Reopen and verify persistence ---------------------------
     t.section("EVFS Encrypted Database - Reopen & Read");
 
     let conn =
@@ -414,7 +414,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
 
     drop(conn);
 
-    // ── Verify the raw file is not plaintext ────────────────────
+    // -- Verify the raw file is not plaintext --------------------
     t.section("EVFS Ciphertext Verification");
 
     let raw = std::fs::read(&db_path).expect("read raw DB file");
@@ -439,7 +439,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         t.fail("ciphertext check", &"plaintext row data found in raw file");
     }
 
-    // ── Multi-table test ────────────────────────────────────────
+    // -- Multi-table test ----------------------------------------
     t.section("EVFS Multi-Table Operations");
 
     let conn =
@@ -479,7 +479,7 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.assert_eq("JOIN row 0", &joined[0], &("Sprocket".to_string(), 100i64));
     t.assert_eq("JOIN row 1", &joined[1], &("Doohickey".to_string(), 250i64));
 
-    // ── Transaction test ────────────────────────────────────────
+    // -- Transaction test ----------------------------------------
     t.section("EVFS Transactions");
 
     conn.execute_batch("BEGIN;")?;
@@ -507,9 +507,9 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     Ok(())
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // EVFS Backup / Restore tests (via Rust API)
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn make_provider(keyfile: &Path) -> Arc<dyn KmsProvider> {
     Arc::new(DeviceKeyProvider::from_keyfile(keyfile.to_path_buf()))
@@ -562,7 +562,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     std::fs::write(&db_path, &db_bytes).expect("write source DB");
     t.ok(&format!("created encrypted source DB ({page_count} pages)"));
 
-    // ── Create backup ───────────────────────────────────────────
+    // -- Create backup -------------------------------------------
     t.section("EVFS Backup - Create");
 
     let bkp_provider = make_provider(&bkp_key);
@@ -602,7 +602,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         t.fail("backup magic", &"wrong magic bytes");
     }
 
-    // ── Verify backup ───────────────────────────────────────────
+    // -- Verify backup -------------------------------------------
     t.section("EVFS Backup - Verify");
 
     match backup::verify_backup(&mut Cursor::new(&backup_buf), bkp_provider.as_ref()) {
@@ -623,7 +623,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         Err(e) => t.fail("verify backup", &e),
     }
 
-    // ── Verify with wrong key fails ─────────────────────────────
+    // -- Verify with wrong key fails -----------------------------
     t.section("EVFS Backup - Wrong Key Rejection");
 
     let wrong_provider = make_provider(&tgt_key); // different key
@@ -646,7 +646,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         }
     }
 
-    // ── Restore backup ──────────────────────────────────────────
+    // -- Restore backup ------------------------------------------
     t.section("EVFS Backup - Restore");
 
     let tgt_provider = make_provider(&tgt_key);
@@ -706,7 +706,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         t.ok("all restored pages verified");
     }
 
-    // ── KEK rotation ────────────────────────────────────────────
+    // -- KEK rotation --------------------------------------------
     t.section("EVFS Backup - KEK Rotation");
 
     let backup_file = tmp.path("rotatable.evfs-backup");
@@ -746,7 +746,7 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
         _ => t.ok("old key correctly rejected after rotation"),
     }
 
-    // ── Restore from rotated backup ─────────────────────────────
+    // -- Restore from rotated backup -----------------------------
     t.section("EVFS Backup - Restore After Rotation");
 
     let tgt2_key = tmp.write_keyfile("tgt2.key", [0x55; 32]);
@@ -789,9 +789,9 @@ fn run_evfs_backup_tests(t: &mut TestRunner) {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // EVFS Crypto unit tests (run in-process, no VFS needed)
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn run_evfs_crypto_tests(t: &mut TestRunner) {
     t.section("EVFS Crypto - Page Round-Trip");
@@ -832,7 +832,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
         t.fail("round-trip", &"payload mismatch after decrypt");
     }
 
-    // ── Wrong key ───────────────────────────────────────────────
+    // -- Wrong key -----------------------------------------------
     t.section("EVFS Crypto - Wrong Key Rejection");
 
     let dek2 = sqlevfs::crypto::keys::Dek::generate();
@@ -844,7 +844,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
         Ok(()) => t.fail("wrong key", &"decryption should have failed"),
     }
 
-    // ── Wrong page number ───────────────────────────────────────
+    // -- Wrong page number ---------------------------------------
     t.section("EVFS Crypto - Wrong Page Number Rejection");
 
     let mut page = vec![0xEFu8; page_size];
@@ -855,7 +855,7 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
         Ok(()) => t.fail("wrong page_no", &"decryption should have failed"),
     }
 
-    // ── Envelope wrap / unwrap ──────────────────────────────────
+    // -- Envelope wrap / unwrap ----------------------------------
     t.section("EVFS Crypto - Envelope Encryption");
 
     let tmp = TestDir::new("evfs-envelope-");
@@ -894,9 +894,9 @@ fn run_evfs_crypto_tests(t: &mut TestRunner) {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 // Keyring tests
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn run_evfs_keyring_tests(t: &mut TestRunner) {
     t.section("EVFS Keyring - Scope Resolution");
@@ -957,7 +957,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
         Err(e) => t.fail("dek_for(Column)", &e),
     }
 
-    // ── Sidecar persistence ─────────────────────────────────────
+    // -- Sidecar persistence -------------------------------------
     t.section("EVFS Keyring - Sidecar Persistence");
 
     let fake_db = tmp.path("persist-test.db");
@@ -980,7 +980,7 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
         t.fail("sidecar", &"file not created");
     }
 
-    // ── Rewrap ──────────────────────────────────────────────────
+    // -- Rewrap --------------------------------------------------
     t.section("EVFS Keyring - Rewrap All");
 
     match keyring.rewrap_all() {
@@ -989,14 +989,20 @@ fn run_evfs_keyring_tests(t: &mut TestRunner) {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
+// Raft tests
+// --------------------------------------------------------------------
+
+fn run_evfs_raft_tests(t: &mut TestRunner) {}
+
+// --------------------------------------------------------------------
 // Main
-// ────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------
 
 fn main() {
     println!("=== LazySQL + EVFS Test Suite ===");
 
-    // ── Parse mode argument ─────────────────────────────────────
+    // -- Parse mode argument -------------------------------------
     let mode = match env::args().nth(1).as_deref() {
         Some("--debug") => "debug",
         Some("--release") | None => "release",
@@ -1011,7 +1017,7 @@ fn main() {
 
     let mut t = TestRunner::new();
 
-    // ── sqlshim/sqlsec tests ────────────────────────────────────
+    // -- sqlshim/sqlsec tests ------------------------------------
     let sqlsec_path = PathBuf::from(format!("../sqlsec/target/{mode}/libsqlsec.so"));
 
     if sqlsec_path.exists() {
@@ -1026,16 +1032,16 @@ fn main() {
         );
     }
 
-    // ── EVFS crypto unit tests ──────────────────────────────────
+    // -- EVFS crypto unit tests ----------------------------------
     run_evfs_crypto_tests(&mut t);
 
-    // ── EVFS keyring tests ──────────────────────────────────────
+    // -- EVFS keyring tests --------------------------------------
     run_evfs_keyring_tests(&mut t);
 
-    // ── EVFS backup tests ───────────────────────────────────────
+    // -- EVFS backup tests ---------------------------------------
     run_evfs_backup_tests(&mut t);
 
-    // ── EVFS VFS integration tests ──────────────────────────────
+    // -- EVFS VFS integration tests ------------------------------
     let evfs_path_str = format!("../sqlevfs/target/{}/libsqlevfs.so", mode);
     let evfs_path = Path::new(&evfs_path_str);
 
@@ -1048,7 +1054,10 @@ fn main() {
         println!("\n⚠ Skipping EVFS VFS tests ({})", evfs_path.display());
     }
 
-    // ── Summary ────────────────────────────────────────────────
+    // -- EVFS raft tests -----------------------------------------
+    run_evfs_raft_tests(&mut t);
+
+    // -- Summary -------------------------------------------------
     t.summary();
 
     if t.failed > 0 {
