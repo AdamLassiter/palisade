@@ -17,6 +17,7 @@ use crate::{
         keys::{Dek, WrappedDek},
         page as page_crypto,
     },
+    debug,
     keyring::Keyring,
     kms::KmsProvider,
 };
@@ -96,7 +97,9 @@ pub fn create_backup(
     }
 
     dest.flush()?;
-    log::info!("backup created: {page_count} pages");
+    if debug() {
+        eprintln!("sqlevfs: backup created: {page_count} pages");
+    }
     Ok(())
 }
 
@@ -158,10 +161,12 @@ pub fn restore_backup(
     }
 
     std::fs::write(target_path, &output)?;
-    log::info!(
-        "backup restored: {page_count} pages -> {}",
-        target_path.display()
-    );
+    if debug() {
+        eprintln!(
+            "sqlevfs: backup restored: {page_count} pages -> {}",
+            target_path.display()
+        );
+    }
     Ok(())
 }
 
@@ -202,7 +207,9 @@ pub fn verify_backup(
         match page_crypto::decrypt_page(&mut page_buf, page_no, &backup_dek, reserve) {
             Ok(()) => pages_ok += 1,
             Err(e) => {
-                log::warn!("verify: page {page_no} failed: {e}");
+                if debug() {
+                    eprintln!("sqlevfs: verify: page {page_no} failed: {e}");
+                }
                 pages_bad += 1;
             }
         }
@@ -266,7 +273,9 @@ pub fn rotate_backup_kek(
     out.extend_from_slice(&data[12 + hdr_len..]);
 
     std::fs::write(backup_path, &out)?;
-    log::info!("backup KEK rotated for {}", backup_path.display());
+    if debug() {
+        eprintln!("sqlevfs: backup KEK rotated for {}", backup_path.display());
+    }
     Ok(())
 }
 

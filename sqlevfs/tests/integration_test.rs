@@ -128,7 +128,7 @@ fn test_end_to_end_database_operations() -> anyhow::Result<()> {
         enforce: policy::Enforce::Warn,
     };
     let report = sqlevfs::policy::apply_storage_policy(&conn, &db_path, &policy)?;
-    log::error!("Storage policy report: {:?}", report);
+    eprintln!("Storage policy report: {:?}", report);
 
     // Create table
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])?;
@@ -290,13 +290,13 @@ fn test_large_data_encryption() -> anyhow::Result<()> {
     conn.execute("CREATE TABLE blobs (id INTEGER, data BLOB)", [])?;
 
     // Insert large data (1MB)
-    log::info!("Started writing large data encryption");
+    println!("Started writing large data encryption");
     let large_data = vec![0x42u8; 1024 * 1024];
     conn.execute(
         "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
         rusqlite::params![1, &large_data],
     )?;
-    log::info!("Finished writing large data encryption");
+    println!("Finished writing large data encryption");
 
     let bytes = std::fs::read(&db_path)?;
     let page_size = 4096usize;
@@ -312,13 +312,13 @@ fn test_large_data_encryption() -> anyhow::Result<()> {
     let marker = &page2[payload_len + 16..payload_len + 22];
     assert_eq!(marker, b"EVFSv1");
 
-    log::info!("Started reading large data encryption");
+    println!("Started reading large data encryption");
     // Read back
     let retrieved: Vec<u8> =
         conn.query_row("SELECT data FROM blobs WHERE id = ?1", [1], |row| {
             row.get(0)
         })?;
-    log::info!("Finished reading large data encryption");
+    println!("Finished reading large data encryption");
 
     assert_eq!(retrieved.len(), large_data.len());
     assert!(retrieved == large_data); // Avoid assert_eq that prints huge data on failure
@@ -502,7 +502,7 @@ fn test_sqlite3_evfs_init_with_keyfile_env() {
         std::env::remove_var("EVFS_KMS_KEY_ID");
 
         // Note: This will fail if file doesn't exist, but tests the path
-        let _result = sqlite3_evfs_init(
+        let _result = sqlite3_sqlevfs_init(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -519,7 +519,7 @@ fn test_sqlite3_evfs_init_with_passphrase_env() {
         std::env::set_var("EVFS_PASSPHRASE", "test_password");
         std::env::remove_var("EVFS_KMS_KEY_ID");
 
-        let result = sqlite3_evfs_init(
+        let result = sqlite3_sqlevfs_init(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -539,7 +539,7 @@ fn test_sqlite3_evfs_init_no_env() {
         std::env::remove_var("EVFS_PASSPHRASE");
         std::env::remove_var("EVFS_KMS_KEY_ID");
 
-        let result = sqlite3_evfs_init(
+        let result = sqlite3_sqlevfs_init(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

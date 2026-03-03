@@ -15,6 +15,7 @@ It’s meant for “drop-in” behavior: run an existing binary unchanged, prelo
 ```bash
 export LD_PRELOAD=/path/to/libsqlshim.so
 # optional: configure rewrite rules via env vars / config file (project-specific)
+# optional: set SQLSHIM_DEBUG=true for debugging
 ./your_sqlite_app
 ```
 

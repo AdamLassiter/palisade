@@ -21,14 +21,15 @@ case "$CARGO_CMD" in
         ;;
 esac
 
-# Detect build mode: release if "--release" is present, otherwise debug
+# Default mode
 MODE="debug"
-for arg in "$@"; do
-    if [[ "$arg" == "--release" ]]; then
-        MODE="release"
-        break
-    fi
-done
+
+# Parse argument
+case "${2:-}" in
+  --release)
+    MODE="release"
+    ;;
+esac
 
 # Enable backtraces only in debug mode
 if [[ "$MODE" == "debug" ]]; then
@@ -37,6 +38,8 @@ if [[ "$MODE" == "debug" ]]; then
     export RUST_LIB_BACKTRACE=1
 else
     echo "⚡ Release mode detected → backtraces disabled"
+    export RUST_BACKTRACE=
+    export RUST_LIB_BACKTRACE=
 fi
 
 # Find all directories with Cargo.toml, including the root if present

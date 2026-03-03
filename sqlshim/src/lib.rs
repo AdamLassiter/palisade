@@ -46,18 +46,10 @@ fn debug() -> bool {
     std::env::var("SQLSHIM_DEBUG").is_ok()
 }
 
-fn disabled() -> bool {
-    std::env::var("SQLSHIM_DISABLE").is_ok()
-}
-
 fn parse_and_rewrite(sql: &str) -> Option<String> {
-    if disabled() {
-        return None;
-    }
-
     let result = parser::parse_rewrite(sql).map(|stmt| {
         if debug() {
-            eprintln!("sqlshim: rewrite: {:?}", stmt);
+            eprintln!("sqlshim: rewrite: {}", stmt);
         }
         stmt
     });

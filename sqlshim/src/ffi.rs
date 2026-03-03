@@ -1,4 +1,7 @@
-use std::ffi::{CStr, CString};
+use std::{
+    ffi::{CStr, CString},
+    slice::from_raw_parts,
+};
 
 use libc::{RTLD_NEXT, c_char, c_int, c_void};
 
@@ -49,9 +52,9 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
     pz_tail: *mut *const c_char,
 ) -> c_int {
     let real = unsafe { resolve_prepare_v2() };
-    let sql = unsafe { CStr::from_ptr(z_sql).to_string_lossy() };
+    let sql = sqlite3_to_str(&z_sql, n_byte);
 
-    if let Some(new_sql) = parse_and_rewrite(&sql) {
+    if let Some(new_sql) = parse_and_rewrite(sql) {
         if debug() {
             eprintln!("sqlshim: prepare_v2 rewrite!");
             eprintln!("  original: {}", sql.trim());
@@ -74,9 +77,9 @@ pub unsafe extern "C" fn sqlite3_prepare_v3(
     pz_tail: *mut *const c_char,
 ) -> c_int {
     let real = unsafe { resolve_prepare_v3() };
-    let sql = unsafe { CStr::from_ptr(z_sql).to_string_lossy() };
+    let sql = sqlite3_to_str(&z_sql, n_byte);
 
-    if let Some(new_sql) = parse_and_rewrite(&sql) {
+    if let Some(new_sql) = parse_and_rewrite(sql) {
         if debug() {
             eprintln!("sqlshim: prepare_v3 rewrite!");
             eprintln!("  original: {}", sql.trim());
@@ -113,4 +116,14 @@ pub unsafe extern "C" fn sqlite3_exec(
     }
 
     unsafe { real(db, sql, callback, arg, errmsg) }
+}
+
+fn sqlite3_to_str(z_sql: &*const c_char, n_byte: c_int) -> &str {
+    if z_sql.is_null() {
+        return "";
+    }
+
+    let bytes = unsafe { from_raw_parts::<'_, u8>(*z_sql as *const u8, n_byte as usize) };
+
+    str::from_utf8(bytes).expect("Invalid UTF-8 in SQL string")
 }

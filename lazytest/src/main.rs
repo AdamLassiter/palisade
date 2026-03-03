@@ -325,10 +325,9 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         let loader = Connection::open(":memory:")?;
         unsafe {
             loader.load_extension_enable()?;
-            match loader.load_extension(
-                format!("../sqlevfs/target/{mode}/libsqlevfs"),
-                Some("sqlite3_evfs_init"),
-            ) {
+            match loader
+                .load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)
+            {
                 Ok(()) => t.ok("loaded sqlevfs extension"),
                 Err(e) => {
                     t.fail("load sqlevfs extension", &e);
@@ -341,15 +340,22 @@ fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
 
     // -- Open a file-based DB through the encrypted VFS ----------
     t.section("EVFS Encrypted Database - Write");
-    println!("DB path: {}", db_path.display());
 
-    let conn = Connection::open_with_flags_and_vfs(
+    let conn = match Connection::open_with_flags_and_vfs(
         &db_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         "evfs",
-    )?;
+    ) {
+        Ok(c) => {
+            t.ok("opened DB with vfs=evfs");
+            c
+        }
+        Err(e) => {
+            t.fail("open DB with vfs=evfs", &e);
+            return Ok(());
+        }
+    };
     t.ok("opened DB with vfs=evfs");
-    println!("DB file created: {}", db_path.exists());
 
     // Set the reserve bytes so SQLite leaves room for the auth tag.
     // This must match what evfs expects (48 by default in EvfsBuilder,
@@ -1004,8 +1010,8 @@ fn main() {
 
     // -- Parse mode argument -------------------------------------
     let mode = match env::args().nth(1).as_deref() {
-        Some("--debug") => "debug",
-        Some("--release") | None => "release",
+        Some("--debug") | None => "debug",
+        Some("--release") => "release",
         Some(other) => {
             eprintln!("Usage: lazytest [--release|--debug]");
             eprintln!("Unknown option: {}", other);

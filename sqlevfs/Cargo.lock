@@ -2051,7 +2051,6 @@ dependencies = [
  "hmac",
  "libc",
  "libsqlite3-sys",
- "log",
  "openraft",
  "parking_lot",
  "pkg-config",

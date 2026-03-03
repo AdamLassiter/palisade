@@ -22,6 +22,7 @@ use std::{
 use libsqlite3_sys::*;
 
 use crate::{
+    debug,
     keyring::Keyring,
     vfs::{
         consensus::{handle::RaftHandle, wal::WalFileState},
@@ -165,6 +166,14 @@ unsafe extern "C" fn evfs_open(
     flags: c_int,
     p_out_flags: *mut c_int,
 ) -> c_int {
+    if debug() {
+        let name = if z_name.is_null() {
+            "NULL".to_string()
+        } else {
+            unsafe { CStr::from_ptr(z_name).to_string_lossy().into_owned() }
+        };
+        eprintln!("sqlevfs: xOpen: name '{}', flags {flags:#x}", name);
+    }
     unsafe {
         let global = &*((*vfs).pAppData as *const EvfsGlobal);
         let inner_vfs = global.inner_vfs;
@@ -239,6 +248,9 @@ unsafe extern "C" fn evfs_open(
 // -- xClose ----------------------------------------------------------
 
 unsafe extern "C" fn evfs_close(file: *mut sqlite3_file) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xClose");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -277,6 +289,9 @@ unsafe extern "C" fn evfs_read(
     i_amt: c_int,
     i_ofst: i64,
 ) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xRead: offset {i_ofst}, amount {i_amt}");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -299,7 +314,9 @@ unsafe extern "C" fn evfs_read(
             if page_no != 1 {
                 let slice = std::slice::from_raw_parts_mut(buf as *mut u8, amt);
                 if let Err(e) = cryptor.decrypt(slice, page_no) {
-                    log::error!("evfs xRead decrypt page {page_no}: {e}");
+                    if debug() {
+                        eprintln!("sqlevfs: xRead decrypt page {page_no}: {e}");
+                    }
                     return SQLITE_IOERR_READ;
                 }
             }
@@ -337,7 +354,9 @@ unsafe extern "C" fn evfs_read(
                 && !short_read
                 && let Err(e) = cryptor.decrypt(&mut page_buf, page_no)
             {
-                log::error!("evfs xRead slow-path decrypt page {page_no}: {e}");
+                if debug() {
+                    eprintln!("sqlevfs: xRead slow-path decrypt page {page_no}: {e}");
+                }
                 return SQLITE_IOERR_READ;
             }
 
@@ -359,6 +378,9 @@ unsafe extern "C" fn evfs_write(
     i_amt: c_int,
     i_ofst: i64,
 ) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xWrite offset {i_ofst} amt {i_amt}");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -382,7 +404,9 @@ unsafe extern "C" fn evfs_write(
                     page_buf[20] = cryptor.reserve_size as u8;
                 }
             } else if let Err(e) = cryptor.encrypt(&mut page_buf, page_no) {
-                log::error!("evfs xWrite encrypt page {page_no}: {e}");
+                if debug() {
+                    eprintln!("sqlevfs: xWrite encrypt page {page_no}: {e}");
+                }
                 return SQLITE_IOERR_WRITE;
             }
 
@@ -434,7 +458,9 @@ unsafe extern "C" fn evfs_write(
                     && !short_read
                     && let Err(e) = cryptor.decrypt(&mut page_buf, page_no)
                 {
-                    log::error!("evfs xWrite slow-path decrypt page {page_no}: {e}");
+                    if debug() {
+                        eprintln!("sqlevfs: xWrite slow-path decrypt page {page_no}: {e}");
+                    }
                     return SQLITE_IOERR_WRITE;
                 }
             } else {
@@ -451,7 +477,9 @@ unsafe extern "C" fn evfs_write(
                     page_buf[20] = cryptor.reserve_size as u8;
                 }
             } else if let Err(e) = cryptor.encrypt(&mut page_buf, page_no) {
-                log::error!("evfs xWrite slow-path encrypt page {page_no}: {e}");
+                if debug() {
+                    eprintln!("sqlevfs: xWrite slow-path encrypt page {page_no}: {e}");
+                }
                 return SQLITE_IOERR_WRITE;
             }
 
@@ -483,6 +511,9 @@ unsafe extern "C" fn evfs_write(
 // majority has confirmed it.
 
 unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xSync: flags {flags:#x}");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -527,11 +558,11 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
             match result {
                 Some(Ok(())) => {}
                 Some(Err(e)) => {
-                    log::error!("Raft submit_frame failed: {e}");
+                    eprintln!("sqlevfs: Raft submit_frame failed: {e}");
                     return SQLITE_IOERR;
                 }
                 None => {
-                    log::error!("No Tokio runtime available for Raft sync");
+                    eprintln!("sqlevfs: No Tokio runtime available for Raft sync");
                     return SQLITE_IOERR;
                 }
             }
@@ -547,6 +578,9 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
 // never attempts to write (WAL) on a non-leader.
 
 unsafe extern "C" fn evfs_lock(file: *mut sqlite3_file, lock_type: c_int) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xLock: lock_type {lock_type}");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -556,7 +590,7 @@ unsafe extern "C" fn evfs_lock(file: *mut sqlite3_file, lock_type: c_int) -> c_i
             && let Some(ref raft) = *(*efile).raft_handle
             && !raft.is_leader()
         {
-            log::debug!("evfs_lock: refusing RESERVED lock on follower node");
+            eprintln!("sqlevfs: evfs_lock: refusing RESERVED lock on follower node");
             return SQLITE_BUSY;
         }
 
@@ -586,6 +620,9 @@ forward_io!(xTruncate(size: i64) -> c_int);
 forward_io!(xUnlock(lock_type: c_int) -> c_int);
 
 unsafe extern "C" fn evfs_file_size(file: *mut sqlite3_file, p_size: *mut i64) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xFileSize");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         ((*(*(*efile).inner_file).pMethods).xFileSize.unwrap())((*efile).inner_file, p_size)
@@ -596,6 +633,9 @@ unsafe extern "C" fn evfs_check_reserved_lock(
     file: *mut sqlite3_file,
     p_res_out: *mut c_int,
 ) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xCheckReservedLock");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
@@ -608,13 +648,21 @@ unsafe extern "C" fn evfs_file_control(
     op: c_int,
     p_arg: *mut c_void,
 ) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xFileControl: op {op}");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
         let cryptor = &*(*efile).cryptor;
 
         if op == SQLITE_FCNTL_RESERVE_BYTES {
-            log::info!("SQLITE_FCNTL_RESERVE_BYTES -> {}", cryptor.reserve_size);
+            if debug() {
+                eprintln!(
+                    "sqlevfs: SQLITE_FCNTL_RESERVE_BYTES -> {}",
+                    cryptor.reserve_size
+                );
+            }
             if !p_arg.is_null() {
                 *(p_arg as *mut c_int) = cryptor.reserve_size as c_int;
             }
@@ -626,7 +674,7 @@ unsafe extern "C" fn evfs_file_control(
             && let Some(ref raft) = *(*efile).raft_handle
             && !raft.is_leader()
         {
-            log::warn!("evfs_file_control: blocking checkpoint on follower");
+            eprintln!("sqlevfs: evfs_file_control: blocking checkpoint on follower");
             return SQLITE_MISUSE;
         }
 
@@ -635,6 +683,9 @@ unsafe extern "C" fn evfs_file_control(
 }
 
 unsafe extern "C" fn evfs_sector_size(file: *mut sqlite3_file) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xSectorSize");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         ((*(*(*efile).inner_file).pMethods).xSectorSize.unwrap())((*efile).inner_file)
@@ -642,6 +693,9 @@ unsafe extern "C" fn evfs_sector_size(file: *mut sqlite3_file) -> c_int {
 }
 
 unsafe extern "C" fn evfs_device_characteristics(file: *mut sqlite3_file) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xDeviceCharacteristics");
+    }
     unsafe {
         let efile = file as *mut EvfsFile;
         ((*(*(*efile).inner_file).pMethods)
@@ -670,18 +724,21 @@ macro_rules! forward_vfs {
     };
 }
 
-forward_vfs!(evfs_delete       => xDelete(z_name: *const c_char, sync_dir: c_int) -> c_int);
-forward_vfs!(evfs_access       => xAccess(z_name: *const c_char, flags: c_int, p_res_out: *mut c_int) -> c_int);
+forward_vfs!(evfs_delete        => xDelete(z_name: *const c_char, sync_dir: c_int) -> c_int);
+forward_vfs!(evfs_access        => xAccess(z_name: *const c_char, flags: c_int, p_res_out: *mut c_int) -> c_int);
 forward_vfs!(evfs_full_pathname => xFullPathname(z_name: *const c_char, n_out: c_int, z_out: *mut c_char) -> c_int);
-forward_vfs!(evfs_randomness   => xRandomness(n_byte: c_int, z_out: *mut c_char) -> c_int);
-forward_vfs!(evfs_sleep        => xSleep(microseconds: c_int) -> c_int);
-forward_vfs!(evfs_current_time => xCurrentTime(p_time: *mut f64) -> c_int);
+forward_vfs!(evfs_randomness    => xRandomness(n_byte: c_int, z_out: *mut c_char) -> c_int);
+forward_vfs!(evfs_sleep         => xSleep(microseconds: c_int) -> c_int);
+forward_vfs!(evfs_current_time  => xCurrentTime(p_time: *mut f64) -> c_int);
 
 unsafe extern "C" fn evfs_get_last_error(
     vfs: *mut sqlite3_vfs,
     n_buf: c_int,
     z_buf: *mut c_char,
 ) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xGetLastError");
+    }
     unsafe {
         let global = &*((*vfs).pAppData as *const EvfsGlobal);
         if let Some(f) = (*global.inner_vfs).xGetLastError {
@@ -693,6 +750,9 @@ unsafe extern "C" fn evfs_get_last_error(
 }
 
 unsafe extern "C" fn evfs_current_time_int64(vfs: *mut sqlite3_vfs, p_time: *mut i64) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xCurrentTimeInt64");
+    }
     unsafe {
         let global = &*((*vfs).pAppData as *const EvfsGlobal);
         if let Some(f) = (*global.inner_vfs).xCurrentTimeInt64 {
@@ -786,12 +846,14 @@ pub fn register_evfs(name: &str, cfg: EvfsConfig) -> anyhow::Result<()> {
     let rc = unsafe { sqlite3_vfs_register(vfs as *mut sqlite3_vfs, 0) };
     anyhow::ensure!(rc == SQLITE_OK, "sqlite3_vfs_register failed: {rc}");
 
-    log::debug!(
-        "evfs registered (page_size={}, reserve={}, raft={})",
-        cfg.page_size,
-        cfg.reserve_size,
-        global.raft.is_some(),
-    );
+    if debug() {
+        eprintln!(
+            "sqlevfs: registered (page_size={}, reserve={}, raft={})",
+            cfg.page_size,
+            cfg.reserve_size,
+            global.raft.is_some(),
+        );
+    }
     Ok(())
 }
 

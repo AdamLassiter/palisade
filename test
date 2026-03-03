@@ -6,15 +6,8 @@ MODE="debug"
 
 # Parse argument
 case "${1:-}" in
-  --release|"")
+  --release)
     MODE="release"
-    ;;
-  --debug)
-    MODE="debug"
-    ;;
-  *)
-    echo "Usage: $0 [--release|--debug]"
-    exit 1
     ;;
 esac
 
@@ -42,4 +35,6 @@ cd lazytest
 EVFS_KEYFILE=/tmp/evfs-test-master.key \
   LD_PRELOAD="$SQLSHIM_LIB" \
   RUST_BACKTRACE=full \
+  RUST_LIB_BACKTRACE=1 \
   "./$TARGET_DIR/lazytest"
+  --$MODE

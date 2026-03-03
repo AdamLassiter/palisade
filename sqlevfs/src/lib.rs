@@ -1,15 +1,20 @@
 pub mod backup;
 pub mod crypto;
-pub mod policy;
 pub mod io;
 pub mod keyring;
 pub mod kms;
+pub mod policy;
 pub mod vfs;
 
 use std::{path::PathBuf, sync::Arc};
 
 use keyring::Keyring;
 use kms::KmsProvider;
+use libsqlite3_sys::{SQLITE_ERROR, SQLITE_OK};
+
+fn debug() -> bool {
+    std::env::var("SQLEVFS_DEBUG").is_ok()
+}
 
 /// Two high-level operational modes.
 pub enum Mode {
@@ -96,13 +101,11 @@ impl EvfsBuilder {
 /// Auto-register a default device-key VFS when loaded via LD_PRELOAD.
 /// Set `EVFS_KEYFILE` or `EVFS_PASSPHRASE` to activate.
 #[unsafe(no_mangle)]
-pub extern "C" fn sqlite3_evfs_init(
+pub extern "C" fn sqlite3_sqlevfs_init(
     _db: *mut std::ffi::c_void,
     _err_msg: *mut *mut std::ffi::c_char,
     _api: *mut std::ffi::c_void,
 ) -> std::ffi::c_int {
-    let _ = env_logger::try_init();
-
     let mode = if let Ok(path) = std::env::var("EVFS_KEYFILE") {
         Mode::DeviceKey {
             keyfile: Some(PathBuf::from(path)),
@@ -119,18 +122,15 @@ pub extern "C" fn sqlite3_evfs_init(
             endpoint: std::env::var("EVFS_KMS_ENDPOINT").ok(),
         }
     } else {
-        log::warn!("sqlite-evfs: no key source configured, not registering");
-        return 1; // SQLITE_ERROR
+        eprintln!("sqlevfs: no key source configured, not registering");
+        return SQLITE_ERROR;
     };
 
     match EvfsBuilder::new(mode).register() {
-        Ok(_) => {
-            log::info!("sqlite-evfs: VFS 'evfs' registered");
-            0 // SQLITE_OK
-        }
+        Ok(_) => SQLITE_OK,
         Err(e) => {
-            log::error!("sqlite-evfs: registration failed: {e}");
-            1
+            eprintln!("sqlevfs: registration failed: {e}");
+            SQLITE_ERROR
         }
     }
 }

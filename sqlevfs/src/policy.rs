@@ -164,7 +164,7 @@ fn fstype_for_path_best_effort(path: &Path) -> anyhow::Result<Option<String>> {
 fn enforce_or_fallback(enforce: Enforce, msg: &str) -> anyhow::Result<()> {
     match enforce {
         Enforce::Warn => {
-            log::warn!("{msg}");
+            eprintln!("sqlevfs: storage policy warning: {msg}");
             Ok(())
         }
         Enforce::Error => anyhow::bail!("{msg}"),

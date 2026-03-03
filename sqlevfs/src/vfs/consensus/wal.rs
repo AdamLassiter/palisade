@@ -15,7 +15,7 @@ use openraft::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-use crate::vfs::consensus::{NodeId, RaftConfig};
+use crate::{debug, vfs::consensus::{NodeId, RaftConfig}};
 
 /// A single WAL frame that forms one Raft log entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,9 +247,11 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
                     let data = frame_entry.data.clone();
                     drop(s);
                     if let Err(e) = apply(wal_offset, page_no, &data) {
-                        log::error!(
-                            "state machine apply error (offset={wal_offset}, page={page_no}): {e}"
-                        );
+                        if debug() {
+                            eprintln!(
+                                "slqevfs: state machine apply error (offset={wal_offset}, page={page_no}): {e}"
+                            );
+                        }
                         return Err(StorageError::IO {
                             source: openraft::StorageIOError::write_state_machine(
                                 &std::io::Error::other(e.to_string()),
