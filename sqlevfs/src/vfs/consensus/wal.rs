@@ -15,7 +15,10 @@ use openraft::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-use crate::{debug, vfs::consensus::{NodeId, RaftConfig}};
+use crate::{
+    debug,
+    vfs::consensus::{NodeId, RaftConfig},
+};
 
 /// A single WAL frame that forms one Raft log entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -13,9 +13,13 @@ The notes describe the entire VFS interception layer but **none of it exists**. 
 
 `WalFileState` exists but nothing calls it — it's an orphan.
 
+- [x] Done
+
 ### 2. `xLock` / Leader Guard
 
 The notes say non-leaders must refuse `SQLITE_LOCK_RESERVED`. That gate is never implemented. Any node can currently attempt writes.
+
+- [x] Done
 
 ### 3. `apply_fn` Is Never Wired
 
@@ -24,6 +28,8 @@ The notes say non-leaders must refuse `SQLITE_LOCK_RESERVED`. That gate is never
 ### 4. `TruncateCallback` Is Never Invoked
 
 `RaftHandle` stores `truncate_cb` but never calls it — there's no watch on leader step-down events (e.g. polling `metrics()` for leader change).
+
+- [x] Done
 
 ---
 
@@ -37,9 +43,13 @@ The notes say non-leaders must refuse `SQLITE_LOCK_RESERVED`. That gate is never
 
 In `network/mod.rs`, the `filter_map` skips `Membership` and `Blank` entries over the wire. This can corrupt cluster membership state on followers.
 
+- [x] Done
+
 ### 7. `committed_wal_offset` Is Unused
 
 It's stored after `client_write` but never read by anything.
+
+- [x] Done
 
 ---
 
@@ -49,13 +59,19 @@ It's stored after `client_write` but never read by anything.
 
 `RaftHandle::start` only auto-initializes single-node clusters. Multi-node clusters need explicit cluster membership bootstrapping (a join/init flow).
 
+- [x] Done
+
 ### 9. gRPC Server Is Never Started
 
 `serve_grpc` exists but is never called from `RaftHandle::start` or anywhere observable. Peers can't receive RPCs.
 
+- [x] Done
+
 ### 10. No Reconnection / Backoff in `PeerNetwork`
 
 Every RPC call does a fresh `connect()` with no retry, backoff, or connection pooling — a new TCP handshake per log entry.
+
+- [x] Done
 
 ---
 
@@ -72,3 +88,5 @@ Notes flag this explicitly. Nothing prevents SQLite from writing WAL faster than
 ### 13. Proto File Missing
 
 `tonic::include_proto!("sqlevfs.raft")` references a `.proto` file that isn't in the provided code.
+
+- [x] Done

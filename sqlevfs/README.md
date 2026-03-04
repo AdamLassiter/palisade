@@ -31,6 +31,11 @@ If you change page size or reserved space, you can break compatibility with exis
 - **KMS provider abstraction**
   - Local device-key provider (keyfile or passphrase-derived KEK)
   - Cloud provider placeholder (implementation dependent)
+- **Raft-backed WAL replication (experimental)**
+  - leader-gated write path (`xLock` refuses RESERVED lock on followers)
+  - WAL frame submission on `xSync` via `RaftHandle::submit_frame`
+  - state-machine callback (`apply_fn`) for committed frame application
+  - optional gRPC server startup from `RaftHandle::start`
 
 ## How it works (high level)
 
@@ -39,6 +44,32 @@ If you change page size or reserved space, you can break compatibility with exis
   - **Writes**: decrypt existing page (if encrypted) → apply update → encrypt → write full page
   - **Reads**: read full page → decrypt (if encrypted) → copy requested bytes
 - DEKs are created per scope (`Database` or per-table scope) and cached in memory. On first use, a new DEK is generated and wrapped using the KEK from the `KmsProvider`.
+
+## Raft consensus (experimental)
+
+`sqlevfs` includes an experimental Raft consensus layer under `sqlevfs::vfs::consensus`.
+
+Current flow:
+
+- SQLite writes WAL bytes through the custom VFS.
+- WAL frames are accumulated and submitted by the leader at `xSync`.
+- Raft commits the entries.
+- The state machine invokes your `apply_fn(wal_offset, page_no, frame_data)` callback for committed frames.
+
+Current API shape (low-level):
+
+- Start consensus with [`RaftHandle::start`](src/vfs/consensus/handle.rs).
+- Register the VFS with replication enabled via [`register_evfs`](src/vfs/mod.rs) + `EvfsConfig { raft: Some(handle), .. }`.
+- For multi-node startup, call `initialize_cluster(...)` once with the initial membership.
+
+Important limitations right now:
+
+- Log/state storage is in-memory (`WalLogStore`), so crash durability is not production-ready.
+- SQLite checkpoint -> Raft snapshot integration is not wired yet.
+- Backpressure is not enforced yet (writer can outpace replication).
+- `EvfsBuilder` currently registers encryption-only mode (`raft: None`); Raft mode uses lower-level registration APIs.
+
+Use this path for development and experimentation, not production deployments yet.
 
 ## Installation
 
@@ -144,9 +175,14 @@ The sidecar never contains plaintext DEKs.
 
 ## Security notes
 
-- AES-GCM nonces are derived deterministically from page number. This is safe here because each page is encrypted under a random DEK, and the `(DEK, page_no)` pair is unique. Do not reuse a DEK across databases unless you understand the implications.
-- In passphrase mode, a **fixed salt** is currently used. Production deployments should store a random salt alongside the database and use it for derivation (otherwise identical passphrases derive identical KEKs across databases).
-- Page 1 is plaintext. This leaks schema metadata (table names, column names, etc.). If you need full-database confidentiality including schema, you need a SQLite codec integration rather than a VFS-only approach.
+- AES-GCM nonces are derived deterministically from page number.
+  This is safe here because each page is encrypted under a random DEK, and the `(DEK, page_no)` pair is unique.
+  Do not reuse a DEK across databases unless you understand the implications.
+- In passphrase mode, a **fixed salt** is currently used.
+  Production deployments should store a random salt alongside the database and use it for derivation (otherwise identical passphrases derive identical KEKs across databases).
+- Page 1 is plaintext.
+  This leaks schema metadata (table names, column names, etc.).
+  If you need full-database confidentiality including schema, you need a SQLite codec integration rather than a VFS-only approach.
 
 ## Development
 
@@ -167,14 +203,15 @@ cargo test --test integration_test
 Enable VFS logging:
 
 ```bash
-RUST_LOG=sqlevfs::vfs=info cargo test --test integration_test -- test_large_data_encryption
+SQLEVFS_DEBUG=true cargo test --test integration_test -- test_large_data_encryption
 ```
 
 ### Common failure modes
 
 - `database disk image is malformed`
-  - typically indicates page 1 is encrypted (must remain plaintext), or an invalid page-1 header was written.
+  - Typically indicates page 1 is encrypted (must remain plaintext), or an invalid page-1 header was written.
 - `page decrypt failed: aead::Error`
-  - ciphertext/tag mismatch (corruption), wrong DEK, or attempting to decrypt a plaintext page. The `EVFSv1` marker is used to avoid decrypting plaintext pages.
-- large BLOB mismatch without decrypt errors
-  - reserved-bytes not in effect (SQLite writing real data into tag area), or encryption incorrectly applied to journal/WAL/temp files.
+  - Ciphertext/tag mismatch (corruption), wrong DEK, or attempting to decrypt a plaintext page.
+    The `EVFSv1` marker is used to avoid decrypting plaintext pages.
+- Large BLOB mismatch without decrypt errors
+  - Reserved-bytes not in effect (SQLite writing real data into tag area), or encryption incorrectly applied to journal/WAL/temp files.

@@ -386,12 +386,18 @@ mod tests {
 
             // Best-effort notes should be present when PRAGMA queries succeed.
             assert!(
-                report.notes.iter().any(|n| n.contains("sqlite reports journal_mode=")),
+                report
+                    .notes
+                    .iter()
+                    .any(|n| n.contains("sqlite reports journal_mode=")),
                 "expected journal_mode note, got notes={:?}",
                 report.notes
             );
             assert!(
-                report.notes.iter().any(|n| n.contains("sqlite reports temp_store=")),
+                report
+                    .notes
+                    .iter()
+                    .any(|n| n.contains("sqlite reports temp_store=")),
                 "expected temp_store note, got notes={:?}",
                 report.notes
             );

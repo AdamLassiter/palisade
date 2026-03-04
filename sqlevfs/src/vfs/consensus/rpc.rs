@@ -12,6 +12,7 @@ use openraft::{
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::vfs::consensus::{
+    NodeId,
     RaftConfig,
     RaftNode,
     proto::{
@@ -20,6 +21,9 @@ use crate::vfs::consensus::{
     },
     wal::WalFrameEntry,
 };
+
+const TAG_BLANK: i64 = i64::MIN;
+const TAG_MEMBERSHIP: i64 = i64::MIN + 1;
 
 // -- gRPC service implementation --------------------------------------
 
@@ -71,18 +75,35 @@ impl RaftService for RaftGrpcService {
         let entries: Vec<Entry<RaftConfig>> = req
             .entries
             .into_iter()
-            .filter_map(|e| {
-                let frame = e.frame?;
-                Some(Entry {
-                    log_id: LogId::new(CommittedLeaderId::new(e.term, req.leader_id), e.index),
-                    payload: EntryPayload::Normal(WalFrameEntry {
+            .map(|e| {
+                let frame = e
+                    .frame
+                    .ok_or_else(|| Status::invalid_argument("append_entries: missing frame"))?;
+
+                let payload = if frame.wal_offset == TAG_BLANK && frame.page_no == 0 {
+                    EntryPayload::Blank
+                } else if frame.wal_offset == TAG_MEMBERSHIP && frame.page_no == 0 {
+                    let membership: openraft::Membership<NodeId, openraft::BasicNode> =
+                        serde_json::from_slice(&frame.data).map_err(|err| {
+                            Status::invalid_argument(format!(
+                                "append_entries: invalid membership payload: {err}"
+                            ))
+                        })?;
+                    EntryPayload::Membership(membership)
+                } else {
+                    EntryPayload::Normal(WalFrameEntry {
                         wal_offset: frame.wal_offset,
                         page_no: frame.page_no,
                         data: frame.data,
-                    }),
+                    })
+                };
+
+                Ok(Entry {
+                    log_id: LogId::new(CommittedLeaderId::new(e.term, req.leader_id), e.index),
+                    payload,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>, Status>>()?;
 
         let raft_req = AppendEntriesRequest {
             vote: Vote::new_committed(req.term, req.leader_id),

@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -15,6 +16,7 @@ use crate::vfs::consensus::{
     RaftNode,
     TruncateCallback,
     network::ReplicaNetwork,
+    rpc::serve_grpc,
     wal::{WalFrameEntry, WalLogStore, WalStateMachine, WalStorageInner},
 };
 
@@ -45,6 +47,7 @@ impl RaftHandle {
         peers: HashMap<NodeId, String>,
         apply_fn: impl Fn(i64, u32, &[u8]) -> Result<()> + Send + Sync + 'static,
         truncate_cb: Option<TruncateCallback>,
+        grpc_listen: Option<SocketAddr>,
     ) -> Result<Arc<Self>> {
         let config = Arc::new(
             Config {
@@ -70,6 +73,15 @@ impl RaftHandle {
             .await
             .context("failed to create Raft node")?;
 
+        if let Some(listen_addr) = grpc_listen {
+            let raft_for_server = raft.clone();
+            tokio::spawn(async move {
+                if let Err(e) = serve_grpc(raft_for_server, listen_addr).await {
+                    eprintln!("sqlevfs: raft gRPC server exited with error: {e}");
+                }
+            });
+        }
+
         // If this is a single-node cluster, immediately become leader.
         if peers.is_empty() {
             raft.initialize(BTreeMap::from([(node_id, BasicNode::default())]))
@@ -77,12 +89,41 @@ impl RaftHandle {
                 .ok(); // may fail if already initialised — that's fine.
         }
 
-        Ok(Arc::new(Self {
+        let handle = Arc::new(Self {
             node_id,
             raft,
             committed_wal_offset: AtomicU64::new(0),
             truncate_cb,
-        }))
+        });
+
+        Self::spawn_leader_watchdog(handle.clone());
+
+        Ok(handle)
+    }
+
+    fn spawn_leader_watchdog(handle: Arc<Self>) {
+        tokio::spawn(async move {
+            let mut was_leader = false;
+
+            loop {
+                let now_leader = handle.is_leader();
+
+                if was_leader
+                    && !now_leader
+                    && let Some(cb) = handle.truncate_cb.as_ref()
+                {
+                    let committed = handle.committed_wal_offset.load(Ordering::Acquire) as i64;
+                    if let Err(e) = cb(committed) {
+                        eprintln!(
+                            "sqlevfs: truncate callback failed after leader step-down at offset {committed}: {e}"
+                        );
+                    }
+                }
+
+                was_leader = now_leader;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        });
     }
 
     /// Returns `true` if this node is currently the Raft leader.
@@ -136,5 +177,19 @@ impl RaftHandle {
     /// Return current Raft metrics for observability.
     pub fn metrics(&self) -> RaftMetrics<NodeId, BasicNode> {
         self.raft.metrics().borrow().clone()
+    }
+
+    /// Highest WAL byte offset known committed on this node.
+    pub fn committed_wal_offset(&self) -> u64 {
+        self.committed_wal_offset.load(Ordering::Acquire)
+    }
+
+    /// Explicit multi-node bootstrap for initial cluster membership.
+    pub async fn initialize_cluster(&self, members: BTreeMap<NodeId, BasicNode>) -> Result<()> {
+        self.raft
+            .initialize(members)
+            .await
+            .context("failed to initialize raft cluster")?;
+        Ok(())
     }
 }
