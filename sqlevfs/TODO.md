@@ -1,5 +1,14 @@
 # TODO
 
+## Developer Experience
+
+### 0. Rust library usage vs. C library usage
+
+Raft configuration expects rust crate bindings to be called.
+These could be extracted into environment variables to enable configuring consensus replication when built as a dylib.
+
+---
+
 ## Replication Correctness
 
 ### 1. Wire `apply_fn` to real WAL replay on followers
