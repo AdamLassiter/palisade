@@ -53,7 +53,7 @@ impl FileContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{crypto::keys::KeyScope, tests::MockKmsProvider};
+    use crate::{crypto::{keys::KeyScope, page::MIN_RESERVE}, tests::MockKmsProvider};
 
     // Helper to create a test FileContext
     fn create_test_context(with_map: bool) -> FileContext {
@@ -63,7 +63,7 @@ mod tests {
         let mut ctx = FileContext {
             keyring,
             page_size: 4096,
-            reserve_size: 24,
+            reserve_size: MIN_RESERVE,
             encrypt_enabled: true,
             page_scope_map: None,
         };
@@ -79,7 +79,7 @@ mod tests {
     fn test_file_context_creation() {
         let ctx = create_test_context(false);
         assert_eq!(ctx.page_size, 4096);
-        assert_eq!(ctx.reserve_size, 24);
+        assert_eq!(ctx.reserve_size, MIN_RESERVE);
         assert!(ctx.page_scope_map.is_none());
     }
 

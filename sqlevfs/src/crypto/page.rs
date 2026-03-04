@@ -5,33 +5,37 @@ use super::keys::Dek;
 pub const TAG_LEN: usize = 16;
 pub const MARKER: &[u8; 6] = b"EVFSv1";
 pub const MARKER_LEN: usize = 6;
+pub const NONCE_LEN: usize = 12;
+pub const MIN_RESERVE: usize = TAG_LEN + MARKER_LEN + NONCE_LEN;
 
 fn ensure_reserve(reserve: usize) -> anyhow::Result<()> {
     anyhow::ensure!(
-        reserve >= TAG_LEN + MARKER_LEN,
-        "reserve ({reserve}) must be >= {} (tag+marker)",
-        TAG_LEN + MARKER_LEN
+        reserve >= MIN_RESERVE,
+        "reserve ({reserve}) must be >= {MIN_RESERVE} (tag+marker+nonce)",
     );
     Ok(())
 }
 
 pub fn is_encrypted_page(page: &[u8], reserve: usize) -> bool {
-    if reserve < TAG_LEN + MARKER_LEN || page.len() < reserve {
+    if reserve < MIN_RESERVE || page.len() < reserve {
         return false;
     }
     let payload_len = page.len() - reserve;
-    let mr = (payload_len + TAG_LEN)..(payload_len + TAG_LEN + MARKER_LEN);
-    page.get(mr) == Some(MARKER.as_slice())
+    page.get(marker_range(payload_len)) == Some(MARKER.as_slice())
 }
 
 fn marker_range(payload_len: usize) -> std::ops::Range<usize> {
     (payload_len + TAG_LEN)..(payload_len + TAG_LEN + MARKER_LEN)
 }
 
+fn nonce_range(payload_len: usize) -> std::ops::Range<usize> {
+    (payload_len + TAG_LEN + MARKER_LEN)..(payload_len + TAG_LEN + MARKER_LEN + NONCE_LEN)
+}
+
 /// Encrypt a database page in place.
 pub fn encrypt_page(
     page: &mut [u8],
-    page_no: u32,
+    _page_no: u32,
     dek: &Dek,
     reserve: usize,
 ) -> anyhow::Result<()> {
@@ -39,7 +43,7 @@ pub fn encrypt_page(
     let page_len = page.len();
     let payload_len = page_len - reserve;
 
-    let nonce_bytes = page_nonce(page_no);
+    let nonce_bytes = rand_nonce();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let cipher = Aes256Gcm::new_from_slice(dek.as_bytes())?;
 
@@ -56,8 +60,9 @@ pub fn encrypt_page(
     page[payload_len..payload_len + TAG_LEN].copy_from_slice(&ciphertext[ct_len..]);
 
     // Write marker after tag.
-    let mr = marker_range(payload_len);
-    page[mr].copy_from_slice(MARKER);
+    page[marker_range(payload_len)].copy_from_slice(MARKER);
+    // Store nonce after marker so decrypt can recover the per-write nonce.
+    page[nonce_range(payload_len)].copy_from_slice(&nonce_bytes);
 
     Ok(())
 }
@@ -65,7 +70,7 @@ pub fn encrypt_page(
 /// Decrypt a database page in place.
 pub fn decrypt_page(
     page: &mut [u8],
-    page_no: u32,
+    _page_no: u32,
     dek: &Dek,
     reserve: usize,
 ) -> anyhow::Result<()> {
@@ -80,7 +85,8 @@ pub fn decrypt_page(
         "missing EVFS marker"
     );
 
-    let nonce_bytes = page_nonce(page_no);
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    nonce_bytes.copy_from_slice(&page[nonce_range(payload_len)]);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let cipher = Aes256Gcm::new_from_slice(dek.as_bytes())?;
 
@@ -101,10 +107,9 @@ pub fn decrypt_page(
     Ok(())
 }
 
-/// Deterministic nonce from page number.
-fn page_nonce(page_no: u32) -> [u8; 12] {
-    let mut n = [0u8; 12];
-    n[0..4].copy_from_slice(&page_no.to_le_bytes());
+fn rand_nonce() -> [u8; NONCE_LEN] {
+    let mut n = [0u8; NONCE_LEN];
+    getrandom::fill(&mut n).expect("getrandom failed");
     n
 }
 
@@ -116,7 +121,7 @@ mod tests {
     #[test]
     fn round_trip() {
         let dek = Dek::generate();
-        let reserve = 32;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0xABu8; page_size];
         let original = page.clone();
@@ -137,7 +142,7 @@ mod tests {
     #[test]
     fn round_trip_basic() {
         let dek = Dek::generate();
-        let reserve = 32;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0xABu8; page_size];
         let original = page.clone();
@@ -158,7 +163,7 @@ mod tests {
     #[test]
     fn round_trip_reserve_equals_tag_len() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0xCDu8; page_size];
         let original = page.clone();
@@ -179,7 +184,7 @@ mod tests {
     #[test]
     fn tag_placement() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0x42u8; page_size];
         let payload_len = page_size - reserve;
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn reserved_area_preserved_after_decrypt() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0xFFu8; page_size];
         let payload_len = page_size - reserve;
@@ -216,7 +221,7 @@ mod tests {
     fn wrong_key_fails() {
         let dek1 = Dek::generate();
         let dek2 = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let mut page = vec![0xCDu8; 4096];
 
         encrypt_page(&mut page, 1, &dek1, reserve).unwrap();
@@ -224,19 +229,21 @@ mod tests {
     }
 
     #[test]
-    fn wrong_page_no_fails() {
+    fn decrypt_ignores_page_no_when_nonce_is_embedded() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let mut page = vec![0xEFu8; 4096];
+        let original = page.clone();
 
         encrypt_page(&mut page, 1, &dek, reserve).unwrap();
-        assert!(decrypt_page(&mut page, 2, &dek, reserve).is_err());
+        decrypt_page(&mut page, 2, &dek, reserve).unwrap();
+        assert_eq!(&page[..4096 - reserve], &original[..4096 - reserve]);
     }
 
     #[test]
     fn tampered_ciphertext_fails() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0x55u8; page_size];
 
@@ -251,7 +258,7 @@ mod tests {
     #[test]
     fn tampered_tag_fails() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
         let mut page = vec![0x77u8; page_size];
         let payload_len = page_size - reserve;
@@ -267,7 +274,7 @@ mod tests {
     #[test]
     fn different_page_numbers_produce_different_ciphertexts() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
 
         let mut page1 = vec![0x99u8; page_size];
@@ -282,9 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn same_page_number_same_plaintext_produces_same_ciphertext() {
+    fn same_page_number_same_plaintext_produces_different_ciphertext() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 4096;
 
         let mut page1 = vec![0x88u8; page_size];
@@ -293,14 +300,14 @@ mod tests {
         encrypt_page(&mut page1, 1, &dek, reserve).unwrap();
         encrypt_page(&mut page2, 1, &dek, reserve).unwrap();
 
-        // Same page number and plaintext should produce identical ciphertext
-        assert_eq!(page1, page2);
+        // Nonce is random per write, so ciphertext should differ.
+        assert_ne!(page1, page2);
     }
 
     #[test]
     fn reserve_too_small_fails() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN - 1;
+        let reserve = MIN_RESERVE - 1;
         let mut page = vec![0x11u8; 4096];
 
         let result = encrypt_page(&mut page, 1, &dek, reserve);
@@ -310,7 +317,7 @@ mod tests {
     #[test]
     fn large_page_size() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 65536;
         let mut page = vec![0x33u8; page_size];
         let original = page.clone();
@@ -328,7 +335,7 @@ mod tests {
     #[test]
     fn small_page_size() {
         let dek = Dek::generate();
-        let reserve = TAG_LEN + MARKER_LEN;
+        let reserve = MIN_RESERVE;
         let page_size = 512;
         let mut page = vec![0x44u8; page_size];
         let original = page.clone();
@@ -342,17 +349,17 @@ mod tests {
     }
 
     #[test]
-    fn page_nonce_deterministic() {
-        let nonce1 = page_nonce(42);
-        let nonce2 = page_nonce(42);
-        assert_eq!(nonce1, nonce2);
-    }
+    fn nonce_is_stored_in_reserved_bytes() {
+        let dek = Dek::generate();
+        let reserve = MIN_RESERVE;
+        let page_size = 4096;
+        let mut page = vec![0xABu8; page_size];
+        let payload_len = page_size - reserve;
 
-    #[test]
-    fn page_nonce_different_for_different_pages() {
-        let nonce1 = page_nonce(1);
-        let nonce2 = page_nonce(2);
-        assert_ne!(nonce1, nonce2);
+        encrypt_page(&mut page, 42, &dek, reserve).unwrap();
+        let nonce = &page[nonce_range(payload_len)];
+        assert_eq!(nonce.len(), NONCE_LEN);
+        assert!(nonce.iter().any(|b| *b != 0));
     }
 
     #[test]

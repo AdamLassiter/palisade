@@ -838,3 +838,46 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
 
     Ok(())
 }
+
+#[test_log::test]
+fn test_wal_journal_mode_enabled_with_evfs() -> anyhow::Result<()> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let temp_dir = TempDir::new()?;
+    let keyfile = temp_dir.path().join("wal-mode.key");
+    fs::write(&keyfile, vec![0x77; 32])?;
+
+    let db_path = temp_dir.path().join("wal-mode.db");
+    let vfs_name = "evfs_wal_mode_test";
+
+    let mode = Mode::DeviceKey {
+        keyfile: Some(keyfile),
+        passphrase: None,
+    };
+
+    EvfsBuilder::new(mode).vfs_name(vfs_name).register()?;
+
+    let conn = Connection::open_with_flags_and_vfs(
+        &db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        vfs_name,
+    )?;
+
+    let _: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+    let mut stmt = conn.prepare("PRAGMA journal_mode = WAL")?;
+    let wal_after: String = stmt.query_row([], |r| r.get(0))?;
+    drop(stmt);
+    assert_eq!(
+        wal_after.to_lowercase(),
+        "wal",
+        "journal_mode should switch to WAL"
+    );
+
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [])?;
+    conn.execute("INSERT INTO t (v) VALUES ('ok')", [])?;
+    let v: String = conn.query_row("SELECT v FROM t WHERE id = 1", [], |r| r.get(0))?;
+    assert_eq!(v, "ok");
+
+    conn.close().map_err(|(_, e)| e)?;
+    Ok(())
+}

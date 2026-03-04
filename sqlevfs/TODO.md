@@ -1,92 +1,43 @@
 # TODO
 
-## Critical Gaps
+## Replication Correctness
 
-### 1. VFS Layer Itself
+### 1. Wire `apply_fn` to real WAL replay on followers
 
-The notes describe the entire VFS interception layer but **none of it exists**. There's no:
+`WalStateMachine` invokes `apply_fn`, but production code still lacks a concrete follower replay path that writes committed WAL frames into follower SQLite state via inner VFS handles.
 
-- `sqlite3_vfs` registration
-- `xWrite` / `xRead` / `xSync` / `xLock` implementations
-- `EvfsFile` struct (referenced in comments but absent)
-- WAL vs. main DB file discrimination logic
+### 2. End-to-end Raft submission from SQLite WAL writes
 
-`WalFileState` exists but nothing calls it — it's an orphan.
+The WAL buffering/submission path in the VFS needs a full correctness pass so committed transactions are reliably submitted at `xSync` under all partial-write/frame-boundary patterns.
 
-- [x] Done
+### 3. True multi-node integration test coverage
 
-### 2. `xLock` / Leader Guard
-
-The notes say non-leaders must refuse `SQLITE_LOCK_RESERVED`. That gate is never implemented. Any node can currently attempt writes.
-
-- [x] Done
-
-### 3. `apply_fn` Is Never Wired
-
-`WalStateMachine` calls `apply_fn` on commit, but nothing constructs a meaningful one. The VFS layer that would provide it doesn't exist, so committed frames go nowhere on followers.
-
-### 4. `TruncateCallback` Is Never Invoked
-
-`RaftHandle` stores `truncate_cb` but never calls it — there's no watch on leader step-down events (e.g. polling `metrics()` for leader change).
-
-- [x] Done
+Current tests validate single-node and bridged behavior, but we still need stable real multi-node leader/follower tests over Raft RPC for full transaction propagation.
 
 ---
 
-## Storage / Correctness Issues
+## Durability / Operations
 
-### 5. In-Memory Only Storage
+### 4. Persistent Raft storage
 
-`WalLogStore` is a `BTreeMap` — explicitly noted as non-production. A crash loses the entire Raft log, violating durability.
+`WalLogStore` is still in-memory (`BTreeMap`). Crash/restart loses Raft log and metadata.
 
-### 6. `append_entries` Silently Drops Non-Normal Entries
+### 5. Checkpoint/snapshot integration
 
-In `network/mod.rs`, the `filter_map` skips `Membership` and `Blank` entries over the wire. This can corrupt cluster membership state on followers.
+SQLite checkpoint lifecycle is not yet integrated with `trigger_snapshot` and log compaction.
 
-- [x] Done
+### 6. Backpressure controls
 
-### 7. `committed_wal_offset` Is Unused
-
-It's stored after `client_write` but never read by anything.
-
-- [x] Done
+No explicit limit/flow-control exists to prevent SQLite WAL production from outpacing Raft commit/apply throughput.
 
 ---
 
-## Multi-Node / Protocol Gaps
+## Security Hardening
 
-### 8. Multi-Node Initialization
+### 7. Passphrase KDF salt handling
 
-`RaftHandle::start` only auto-initializes single-node clusters. Multi-node clusters need explicit cluster membership bootstrapping (a join/init flow).
+Device passphrase mode still uses a fixed salt. Move to per-database random salt persisted alongside DB metadata.
 
-- [x] Done
+### 8. Plaintext metadata leakage from page 1
 
-### 9. gRPC Server Is Never Started
-
-`serve_grpc` exists but is never called from `RaftHandle::start` or anywhere observable. Peers can't receive RPCs.
-
-- [x] Done
-
-### 10. No Reconnection / Backoff in `PeerNetwork`
-
-Every RPC call does a fresh `connect()` with no retry, backoff, or connection pooling — a new TCP handshake per log entry.
-
-- [x] Done
-
----
-
-## Operational Gaps
-
-### 11. No Checkpointing Integration
-
-The notes describe SQLite WAL checkpointing as the trigger for `trigger_snapshot`, but nothing calls it, and there's no WAL checkpoint logic.
-
-### 12. No Backpressure
-
-Notes flag this explicitly. Nothing prevents SQLite from writing WAL faster than Raft can commit, which would cause unbounded buffering or silent data loss.
-
-### 13. Proto File Missing
-
-`tonic::include_proto!("sqlevfs.raft")` references a `.proto` file that isn't in the provided code.
-
-- [x] Done
+Page 1 remains plaintext by design, exposing schema metadata. Documented, but still an open security limitation.

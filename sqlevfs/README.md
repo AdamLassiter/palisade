@@ -21,7 +21,7 @@ If you change page size or reserved space, you can break compatibility with exis
 
 - **Transparent page-level encryption**
   - AES-256-GCM per page
-  - deterministic nonce derived from page number (safe because DEKs are random and unique per DB/scope)
+  - random nonce per page write, stored in reserved bytes
   - AEAD tag stored in SQLite page reserved bytes
   - `EVFSv1` marker stored after the tag to detect encrypted pages reliably
 - **Key management**
@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
     EvfsBuilder::new(mode)
         .vfs_name("evfs")
         .page_size(4096)
-        .reserve_size(48) // 16 tag + 6 marker + spare
+        .reserve_size(48) // 16 tag + 6 marker + 12 nonce + spare
         .register()?;
 
     let conn = Connection::open_with_flags_and_vfs(
@@ -175,9 +175,8 @@ The sidecar never contains plaintext DEKs.
 
 ## Security notes
 
-- AES-GCM nonces are derived deterministically from page number.
-  This is safe here because each page is encrypted under a random DEK, and the `(DEK, page_no)` pair is unique.
-  Do not reuse a DEK across databases unless you understand the implications.
+- AES-GCM uses a random per-write nonce stored in reserved bytes.
+  Keep `reserve_size >= 34` (16 tag + 6 marker + 12 nonce).
 - In passphrase mode, a **fixed salt** is currently used.
   Production deployments should store a random salt alongside the database and use it for derivation (otherwise identical passphrases derive identical KEKs across databases).
 - Page 1 is plaintext.

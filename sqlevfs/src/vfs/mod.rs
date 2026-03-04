@@ -22,6 +22,7 @@ use std::{
 use libsqlite3_sys::*;
 
 use crate::{
+    crypto::page::MIN_RESERVE,
     debug,
     keyring::Keyring,
     vfs::{
@@ -45,6 +46,8 @@ struct EvfsFile {
     wal_state: *mut Option<WalFileState>,
     /// Whether page-level encryption is active for this fd.
     encrypt_enabled: bool,
+    /// Whether WAL-frame encryption is active for this fd.
+    wal_encrypt_enabled: bool,
     /// Optional Raft handle; populated in `evfs_open` when replication
     /// is enabled.  Stored here so `xSync` and `xLock` can reach it
     /// without an extra indirection through the VFS struct.
@@ -66,6 +69,9 @@ struct EvfsGlobal {
 // lifetime. EvfsGlobal is leaked and never mutated after registration.
 unsafe impl Send for EvfsGlobal {}
 unsafe impl Sync for EvfsGlobal {}
+
+const WAL_HEADER_SIZE: i64 = 32;
+const WAL_FRAME_HEADER_SIZE: usize = 24;
 
 // -- Page offset helpers ---------------------------------------------
 
@@ -89,6 +95,229 @@ unsafe fn inner_filesize(inner: *mut sqlite3_file) -> Option<i64> {
     }
 }
 
+fn wal_encrypt_frame_in_place(cryptor: &PageCryptor, frame: &mut [u8]) -> anyhow::Result<()> {
+    let page_size = cryptor.page_size as usize;
+    if frame.len() != WAL_FRAME_HEADER_SIZE + page_size {
+        anyhow::bail!("invalid WAL frame size: {}", frame.len());
+    }
+
+    let page_no = u32::from_be_bytes(frame[0..4].try_into().unwrap_or([0; 4]));
+    if page_no <= 1 {
+        return Ok(());
+    }
+
+    cryptor.encrypt(
+        &mut frame[WAL_FRAME_HEADER_SIZE..WAL_FRAME_HEADER_SIZE + page_size],
+        page_no,
+    )
+}
+
+fn wal_decrypt_frame_in_place(cryptor: &PageCryptor, frame: &mut [u8]) -> anyhow::Result<()> {
+    let page_size = cryptor.page_size as usize;
+    if frame.len() != WAL_FRAME_HEADER_SIZE + page_size {
+        anyhow::bail!("invalid WAL frame size: {}", frame.len());
+    }
+
+    let page_no = u32::from_be_bytes(frame[0..4].try_into().unwrap_or([0; 4]));
+    if page_no <= 1 {
+        return Ok(());
+    }
+
+    let _decrypted = cryptor.decrypt(
+        &mut frame[WAL_FRAME_HEADER_SIZE..WAL_FRAME_HEADER_SIZE + page_size],
+        page_no,
+    )?;
+    Ok(())
+}
+
+unsafe fn wal_read_encrypted(
+    inner: *mut sqlite3_file,
+    cryptor: &PageCryptor,
+    buf: *mut c_void,
+    i_amt: c_int,
+    i_ofst: i64,
+) -> c_int {
+    unsafe {
+        let out = std::slice::from_raw_parts_mut(buf as *mut u8, i_amt as usize);
+        out.fill(0);
+
+        let start = i_ofst;
+        let end = i_ofst.checked_add(i_amt as i64).unwrap_or(i64::MAX);
+
+        // WAL file header stays plaintext.
+        if start < WAL_HEADER_SIZE {
+            let hdr_start = start.max(0);
+            let hdr_end = end.min(WAL_HEADER_SIZE);
+            if hdr_end > hdr_start {
+                let len = (hdr_end - hdr_start) as usize;
+                let mut header = vec![0u8; len];
+                let rc = ((*(*inner).pMethods).xRead.unwrap())(
+                    inner,
+                    header.as_mut_ptr() as *mut c_void,
+                    len as c_int,
+                    hdr_start,
+                );
+                if rc != SQLITE_OK && rc != SQLITE_IOERR_SHORT_READ {
+                    return rc;
+                }
+                let dst_off = (hdr_start - start) as usize;
+                out[dst_off..dst_off + len].copy_from_slice(&header);
+            }
+        }
+
+        if end <= WAL_HEADER_SIZE {
+            return SQLITE_OK;
+        }
+
+        let frame_size = WAL_FRAME_HEADER_SIZE as i64 + cryptor.page_size as i64;
+        let data_start = start.max(WAL_HEADER_SIZE);
+        let data_end = end;
+        let first = (data_start - WAL_HEADER_SIZE) / frame_size;
+        let last = (data_end - 1 - WAL_HEADER_SIZE) / frame_size;
+
+        for frame_idx in first..=last {
+            let frame_off = WAL_HEADER_SIZE + frame_idx * frame_size;
+            let frame_end = frame_off + frame_size;
+
+            let mut frame = vec![0u8; frame_size as usize];
+            let rc = ((*(*inner).pMethods).xRead.unwrap())(
+                inner,
+                frame.as_mut_ptr() as *mut c_void,
+                frame_size as c_int,
+                frame_off,
+            );
+            let short_read = rc == SQLITE_IOERR_SHORT_READ;
+            if rc != SQLITE_OK && !short_read {
+                return rc;
+            }
+
+            if !short_read && let Err(e) = wal_decrypt_frame_in_place(cryptor, &mut frame) {
+                if debug() {
+                    eprintln!("sqlevfs: xRead WAL decrypt frame at {frame_off}: {e}");
+                }
+                return SQLITE_IOERR_READ;
+            }
+
+            let seg_start = data_start.max(frame_off);
+            let seg_end = data_end.min(frame_end);
+            if seg_end <= seg_start {
+                continue;
+            }
+
+            let src_off = (seg_start - frame_off) as usize;
+            let seg_len = (seg_end - seg_start) as usize;
+            let dst_off = (seg_start - start) as usize;
+            out[dst_off..dst_off + seg_len].copy_from_slice(&frame[src_off..src_off + seg_len]);
+        }
+
+        SQLITE_OK
+    }
+}
+
+unsafe fn wal_write_encrypted(
+    inner: *mut sqlite3_file,
+    cryptor: &PageCryptor,
+    wal_state: Option<&mut WalFileState>,
+    buf: *const c_void,
+    i_amt: c_int,
+    i_ofst: i64,
+) -> c_int {
+    unsafe {
+        let inp = std::slice::from_raw_parts(buf as *const u8, i_amt as usize);
+        let start = i_ofst;
+        let end = i_ofst.checked_add(i_amt as i64).unwrap_or(i64::MAX);
+
+        // WAL file header remains plaintext.
+        if start < WAL_HEADER_SIZE {
+            let hdr_start = start.max(0);
+            let hdr_end = end.min(WAL_HEADER_SIZE);
+            if hdr_end > hdr_start {
+                let src_off = (hdr_start - start) as usize;
+                let len = (hdr_end - hdr_start) as usize;
+                let rc = ((*(*inner).pMethods).xWrite.unwrap())(
+                    inner,
+                    inp[src_off..src_off + len].as_ptr() as *const c_void,
+                    len as c_int,
+                    hdr_start,
+                );
+                if rc != SQLITE_OK {
+                    return rc;
+                }
+            }
+        }
+
+        if end <= WAL_HEADER_SIZE {
+            return SQLITE_OK;
+        }
+
+        let frame_size = WAL_FRAME_HEADER_SIZE as i64 + cryptor.page_size as i64;
+        let data_start = start.max(WAL_HEADER_SIZE);
+        let data_end = end;
+        let first = (data_start - WAL_HEADER_SIZE) / frame_size;
+        let last = (data_end - 1 - WAL_HEADER_SIZE) / frame_size;
+
+        let mut wal_state = wal_state;
+        for frame_idx in first..=last {
+            let frame_off = WAL_HEADER_SIZE + frame_idx * frame_size;
+            let frame_end = frame_off + frame_size;
+
+            let mut frame = vec![0u8; frame_size as usize];
+            let rc = ((*(*inner).pMethods).xRead.unwrap())(
+                inner,
+                frame.as_mut_ptr() as *mut c_void,
+                frame_size as c_int,
+                frame_off,
+            );
+            let short_read = rc == SQLITE_IOERR_SHORT_READ;
+            if rc != SQLITE_OK && !short_read {
+                return rc;
+            }
+
+            if !short_read && let Err(e) = wal_decrypt_frame_in_place(cryptor, &mut frame) {
+                if debug() {
+                    eprintln!("sqlevfs: xWrite WAL decrypt frame at {frame_off}: {e}");
+                }
+                return SQLITE_IOERR_WRITE;
+            }
+
+            let seg_start = data_start.max(frame_off);
+            let seg_end = data_end.min(frame_end);
+            if seg_end <= seg_start {
+                continue;
+            }
+
+            let seg_len = (seg_end - seg_start) as usize;
+            let src_off = (seg_start - start) as usize;
+            let frame_off_in_buf = (seg_start - frame_off) as usize;
+            frame[frame_off_in_buf..frame_off_in_buf + seg_len]
+                .copy_from_slice(&inp[src_off..src_off + seg_len]);
+
+            if let Err(e) = wal_encrypt_frame_in_place(cryptor, &mut frame) {
+                if debug() {
+                    eprintln!("sqlevfs: xWrite WAL encrypt frame at {frame_off}: {e}");
+                }
+                return SQLITE_IOERR_WRITE;
+            }
+
+            let rc = ((*(*inner).pMethods).xWrite.unwrap())(
+                inner,
+                frame.as_ptr() as *const c_void,
+                frame_size as c_int,
+                frame_off,
+            );
+            if rc != SQLITE_OK {
+                return rc;
+            }
+
+            if let Some(ws) = wal_state.as_deref_mut() {
+                let _frames: Vec<(i64, u32, Vec<u8>)> = ws.push(&frame, frame_off);
+            }
+        }
+
+        SQLITE_OK
+    }
+}
+
 // -- Page-1 initialisation -------------------------------------------
 
 fn try_reserve_page1(cryptor: &PageCryptor, inner: *mut sqlite3_file) -> c_int {
@@ -106,7 +335,7 @@ fn try_reserve_page1(cryptor: &PageCryptor, inner: *mut sqlite3_file) -> c_int {
         if !(512..=65536).contains(&page_size) {
             return SQLITE_IOERR;
         }
-        if reserve > u8::MAX as usize || reserve < 22 || page_size < 108 {
+        if reserve > u8::MAX as usize || reserve < MIN_RESERVE || page_size < 108 {
             return SQLITE_IOERR;
         }
 
@@ -239,6 +468,7 @@ unsafe extern "C" fn evfs_open(
         (*efile).cryptor = cryptor;
         (*efile).wal_state = wal_state;
         (*efile).encrypt_enabled = encrypt_enabled;
+        (*efile).wal_encrypt_enabled = is_wal;
         (*efile).raft_handle = raft_handle;
 
         SQLITE_OK
@@ -297,8 +527,12 @@ unsafe extern "C" fn evfs_read(
         let inner = (*efile).inner_file;
         let cryptor = &*(*efile).cryptor;
 
-        if !(*efile).encrypt_enabled {
+        if !(*efile).encrypt_enabled && !(*efile).wal_encrypt_enabled {
             return ((*(*inner).pMethods).xRead.unwrap())(inner, buf, i_amt, i_ofst);
+        }
+
+        if (*efile).wal_encrypt_enabled {
+            return wal_read_encrypted(inner, cryptor, buf, i_amt, i_ofst);
         }
 
         let page_size = cryptor.page_size as i64;
@@ -386,8 +620,13 @@ unsafe extern "C" fn evfs_write(
         let inner = (*efile).inner_file;
         let cryptor = &*(*efile).cryptor;
 
-        if !(*efile).encrypt_enabled {
+        if !(*efile).encrypt_enabled && !(*efile).wal_encrypt_enabled {
             return ((*(*inner).pMethods).xWrite.unwrap())(inner, buf, i_amt, i_ofst);
+        }
+
+        if (*efile).wal_encrypt_enabled {
+            let wal_state = (*(*efile).wal_state).as_mut();
+            return wal_write_encrypted(inner, cryptor, wal_state, buf, i_amt, i_ofst);
         }
 
         let page_size = cryptor.page_size as i64;
@@ -704,6 +943,72 @@ unsafe extern "C" fn evfs_device_characteristics(file: *mut sqlite3_file) -> c_i
     }
 }
 
+unsafe extern "C" fn evfs_shm_map(
+    file: *mut sqlite3_file,
+    i_pg: c_int,
+    pgsz: c_int,
+    is_write: c_int,
+    pp: *mut *mut c_void,
+) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xShmMap: page={i_pg} size={pgsz} write={is_write}");
+    }
+    unsafe {
+        let efile = file as *mut EvfsFile;
+        let inner = (*efile).inner_file;
+        match (*(*inner).pMethods).xShmMap {
+            Some(f) => f(inner, i_pg, pgsz, is_write, pp),
+            None => SQLITE_IOERR,
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_shm_lock(
+    file: *mut sqlite3_file,
+    offset: c_int,
+    n: c_int,
+    flags: c_int,
+) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xShmLock: offset={offset} n={n} flags={flags:#x}");
+    }
+    unsafe {
+        let efile = file as *mut EvfsFile;
+        let inner = (*efile).inner_file;
+        match (*(*inner).pMethods).xShmLock {
+            Some(f) => f(inner, offset, n, flags),
+            None => SQLITE_IOERR,
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_shm_barrier(file: *mut sqlite3_file) {
+    if debug() {
+        eprintln!("sqlevfs: xShmBarrier");
+    }
+    unsafe {
+        let efile = file as *mut EvfsFile;
+        let inner = (*efile).inner_file;
+        if let Some(f) = (*(*inner).pMethods).xShmBarrier {
+            f(inner);
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_shm_unmap(file: *mut sqlite3_file, delete_flag: c_int) -> c_int {
+    if debug() {
+        eprintln!("sqlevfs: xShmUnmap: delete_flag={delete_flag}");
+    }
+    unsafe {
+        let efile = file as *mut EvfsFile;
+        let inner = (*efile).inner_file;
+        match (*(*inner).pMethods).xShmUnmap {
+            Some(f) => f(inner, delete_flag),
+            None => SQLITE_IOERR,
+        }
+    }
+}
+
 // -- Forwarded VFS methods -------------------------------------------
 //
 // The macro delegates to the inner VFS using the correct sqlite3_vfs
@@ -786,7 +1091,7 @@ pub fn register_evfs(name: &str, cfg: EvfsConfig) -> anyhow::Result<()> {
     let cryptor = PageCryptor::new(cfg.keyring, cfg.page_size, cfg.reserve_size);
 
     let io_methods = sqlite3_io_methods {
-        iVersion: 1,
+        iVersion: 2,
         xClose: Some(evfs_close),
         xRead: Some(evfs_read),
         xWrite: Some(evfs_write),
@@ -799,11 +1104,10 @@ pub fn register_evfs(name: &str, cfg: EvfsConfig) -> anyhow::Result<()> {
         xFileControl: Some(evfs_file_control),
         xSectorSize: Some(evfs_sector_size),
         xDeviceCharacteristics: Some(evfs_device_characteristics),
-        // v2/v3 — not needed for iVersion=1.
-        xShmMap: None,
-        xShmLock: None,
-        xShmBarrier: None,
-        xShmUnmap: None,
+        xShmMap: Some(evfs_shm_map),
+        xShmLock: Some(evfs_shm_lock),
+        xShmBarrier: Some(evfs_shm_barrier),
+        xShmUnmap: Some(evfs_shm_unmap),
         xFetch: None,
         xUnfetch: None,
     };
@@ -894,7 +1198,7 @@ mod tests {
     #[test]
     fn io_methods_critical_slots_set() {
         let methods = sqlite3_io_methods {
-            iVersion: 1,
+            iVersion: 2,
             xClose: Some(evfs_close),
             xRead: Some(evfs_read),
             xWrite: Some(evfs_write),
@@ -907,10 +1211,10 @@ mod tests {
             xFileControl: Some(evfs_file_control),
             xSectorSize: Some(evfs_sector_size),
             xDeviceCharacteristics: Some(evfs_device_characteristics),
-            xShmMap: None,
-            xShmLock: None,
-            xShmBarrier: None,
-            xShmUnmap: None,
+            xShmMap: Some(evfs_shm_map),
+            xShmLock: Some(evfs_shm_lock),
+            xShmBarrier: Some(evfs_shm_barrier),
+            xShmUnmap: Some(evfs_shm_unmap),
             xFetch: None,
             xUnfetch: None,
         };

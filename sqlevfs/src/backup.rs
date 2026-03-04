@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn backup_round_trip() {
         let page_size: u32 = 4096;
-        let reserve: usize = 32;
+        let reserve: usize = crate::crypto::page::MIN_RESERVE;
         let page_count = 4;
 
         // Create a fake encrypted database.
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn kek_rotation_preserves_data() {
         let page_size: u32 = 4096;
-        let reserve: usize = 32;
+        let reserve: usize = crate::crypto::page::MIN_RESERVE;
 
         let src_provider = test_provider([0x11; 32]);
         let src_keyring = Arc::new(Keyring::new(src_provider.clone()));
