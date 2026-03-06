@@ -32,9 +32,17 @@ SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
 # Run lazytest
 cd lazytest
 
+if [[ "$MODE" == "release" ]]; then
 EVFS_KEYFILE=/tmp/evfs-test-master.key \
   LD_PRELOAD="$SQLSHIM_LIB" \
   RUST_BACKTRACE=full \
   RUST_LIB_BACKTRACE=1 \
   "./$TARGET_DIR/lazytest" \
-  --$MODE
+  --release --perf
+else
+EVFS_KEYFILE=/tmp/evfs-test-master.key \
+  LD_PRELOAD="$SQLSHIM_LIB" \
+  RUST_BACKTRACE=full \
+  RUST_LIB_BACKTRACE=1 \
+  "./$TARGET_DIR/lazytest"
+fi

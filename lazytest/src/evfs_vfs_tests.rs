@@ -17,7 +17,8 @@ pub(crate) fn run_evfs_vfs_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         let loader = Connection::open(":memory:")?;
         unsafe {
             loader.load_extension_enable()?;
-            match loader.load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)
+            match loader
+                .load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)
             {
                 Ok(()) => t.ok("loaded sqlevfs extension"),
                 Err(e) => {

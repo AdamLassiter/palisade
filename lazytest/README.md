@@ -22,10 +22,42 @@ It exists so you can easily test and combine multiple SQLite-related shims/exten
 # Build
 cargo build -p lazytest
 
-# Run with one or more preload libraries
+# Run default functional suites
 LD_PRELOAD=/path/to/libsomething.so:/path/to/libother.so \
   target/debug/lazytest
+
+# Run perf suite in addition to functional suites
+target/debug/lazytest --perf
+
+# Run only perf suite
+target/debug/lazytest --perf-only
 ```
+
+## Performance Suite
+
+`--perf` runs two performance comparisons:
+
+1. EVFS overhead:
+- plain SQLite (default VFS)
+- SQLite with `sqlevfs` (`vfs=evfs`)
+
+2. SQLSHIM overhead:
+- plain SQLite process
+- same process with `LD_PRELOAD=libsqlshim.so`
+
+It reports median timings and overhead for:
+
+- write transaction
+- point reads
+- update transaction
+- scan aggregate
+- total workload
+- prepare-heavy point lookups
+- mixed query workload
+- secured-view vs physical-table point reads (sqlsec)
+- secured-view vs physical-table scans (sqlsec)
+
+This provides a quick local signal for how much EVFS, SQLSHIM, and SQLSEC add relative to unmodified SQLite.
 
 ## Notes
 
