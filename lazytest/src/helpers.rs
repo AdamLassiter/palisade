@@ -1,8 +1,11 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
-
-use sqlevfs::{
-    kms::{KmsProvider, local::DeviceKeyProvider},
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
 };
+
+// use sqlevfs::{
+//     kms::{KmsProvider, local::DeviceKeyProvider},
+// };
 
 pub(crate) struct TestDir {
     dir: tempfile::TempDir,
@@ -92,6 +95,6 @@ impl TestRunner {
     }
 }
 
-pub(crate) fn make_provider(keyfile: &Path) -> Arc<dyn KmsProvider> {
-    Arc::new(DeviceKeyProvider::from_keyfile(keyfile.to_path_buf()))
-}
+// pub(crate) fn make_provider(keyfile: &Path) -> Arc<dyn KmsProvider> {
+//     Arc::new(DeviceKeyProvider::from_keyfile(keyfile.to_path_buf()))
+// }

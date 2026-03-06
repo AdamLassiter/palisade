@@ -185,6 +185,22 @@ The sidecar never contains plaintext DEKs.
 
 ## Development
 
+### Building as a sqlite3 `.load` extension
+
+If your `sqlite3` CLI is statically linked (common for self-built binaries), build `sqlevfs` in loadable-extension mode so it uses SQLite's extension API table:
+
+```bash
+cargo build --no-default-features --features loadable_extension
+```
+
+Then load it:
+
+```bash
+EVFS_PASSPHRASE='your passphrase' sqlite3
+sqlite> .load target/debug/libsqlevfs
+sqlite> .open file:test.db?vfs=evfs
+```
+
 ### Running tests
 
 Unit tests:

@@ -53,7 +53,10 @@ impl FileContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{crypto::{keys::KeyScope, page::MIN_RESERVE}, tests::MockKmsProvider};
+    use crate::{
+        crypto::{keys::KeyScope, page::MIN_RESERVE},
+        tests::MockKmsProvider,
+    };
 
     // Helper to create a test FileContext
     fn create_test_context(with_map: bool) -> FileContext {

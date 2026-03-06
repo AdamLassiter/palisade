@@ -1232,6 +1232,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95b4103cffefa72eb8428cb6b47d6627161e51c2739fc5e3b734584157bc642a"
 dependencies = [
  "pkg-config",
+ "prettyplease",
+ "quote",
+ "syn 2.0.115",
  "vcpkg",
 ]
 

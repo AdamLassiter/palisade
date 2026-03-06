@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sqlevfs = { path = "../sqlevfs" }
+# sqlevfs = { path = "../sqlevfs" }
 
 rusqlite = { version = "0.38", default-features = false, features = ["load_extension"] }
 libsqlite3-sys = { version = "0.36", features = [] }

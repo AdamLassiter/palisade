@@ -7,7 +7,7 @@ edition = "2024"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-libsqlite3-sys = { version = "0.36", features = [] }
+libsqlite3-sys = { version = "0.36", features = [ "loadable_extension" ] }
 aes-gcm = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 getrandom = "0.4"
@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["full"] }
 tonic = "0.12"
 openraft = { version = "0.9", features = ["serde"] }
 futures = "0.3"
-rusqlite = { version = "0.38", optional = true }
+rusqlite = { version = "0.38", features = [ "loadable_extension" ], optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"

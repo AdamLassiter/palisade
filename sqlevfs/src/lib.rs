@@ -6,11 +6,49 @@ pub mod kms;
 pub mod policy;
 pub mod vfs;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    ffi::c_void,
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicPtr},
+};
 
 use keyring::Keyring;
 use kms::KmsProvider;
-use libsqlite3_sys::{SQLITE_ERROR, SQLITE_OK};
+use libsqlite3_sys::SQLITE_ERROR;
+
+static EXT_HANDLE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(target_family = "unix")]
+fn pin_extension_in_memory() {
+    if !EXT_HANDLE
+        .load(std::sync::atomic::Ordering::Acquire)
+        .is_null()
+    {
+        return;
+    }
+    unsafe {
+        let mut info: libc::Dl_info = std::mem::zeroed();
+        if libc::dladdr(sqlite3_sqlevfs_init as *const c_void, &mut info) == 0
+            || info.dli_fname.is_null()
+        {
+            return;
+        }
+        let handle = libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_GLOBAL);
+        if handle.is_null() {
+            eprintln!("sqlevfs: dlopen(self) failed while pinning extension");
+            return;
+        }
+        let _ = EXT_HANDLE.compare_exchange(
+            std::ptr::null_mut(),
+            handle,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+}
+
+#[cfg(not(target_family = "unix"))]
+fn pin_extension_in_memory() {}
 
 fn debug() -> bool {
     std::env::var("SQLEVFS_DEBUG").is_ok()
@@ -106,6 +144,23 @@ pub extern "C" fn sqlite3_sqlevfs_init(
     _err_msg: *mut *mut std::ffi::c_char,
     _api: *mut std::ffi::c_void,
 ) -> std::ffi::c_int {
+    if debug() {
+        eprintln!("sqlevfs: initializing (db={_db:p}, err_msg={_err_msg:p}, api={_api:p})");
+    }
+    pin_extension_in_memory();
+    unsafe {
+        if _api.is_null() {
+            eprintln!("sqlevfs: sqlite extension api pointer is null");
+            return SQLITE_ERROR;
+        }
+        if let Err(e) = libsqlite3_sys::rusqlite_extension_init2(
+            _api.cast::<libsqlite3_sys::sqlite3_api_routines>(),
+        ) {
+            eprintln!("sqlevfs: sqlite extension api init failed: {e}");
+            return SQLITE_ERROR;
+        }
+    }
+
     let mode = if let Ok(path) = std::env::var("EVFS_KEYFILE") {
         Mode::DeviceKey {
             keyfile: Some(PathBuf::from(path)),
@@ -127,7 +182,7 @@ pub extern "C" fn sqlite3_sqlevfs_init(
     };
 
     match EvfsBuilder::new(mode).register() {
-        Ok(_) => SQLITE_OK,
+        Ok(_) => libsqlite3_sys::SQLITE_OK_LOAD_PERMANENTLY,
         Err(e) => {
             eprintln!("sqlevfs: registration failed: {e}");
             SQLITE_ERROR

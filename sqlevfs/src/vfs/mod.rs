@@ -1021,6 +1021,9 @@ macro_rules! forward_vfs {
             vfs: *mut sqlite3_vfs,
             $( $arg: $ty, )*
         ) -> c_int {
+            if debug() {
+                eprintln!("sqlevfs: {}", stringify!($fn_name));
+            }
             unsafe {
                 let global = &*((*vfs).pAppData as *const EvfsGlobal);
                 ((*global.inner_vfs).$field.unwrap())(global.inner_vfs, $( $arg, )*)

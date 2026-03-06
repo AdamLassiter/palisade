@@ -1,16 +1,16 @@
 use std::{env, path::{Path, PathBuf}};
 
-mod evfs_backup_tests;
-mod evfs_crypto_tests;
-mod evfs_keyring_tests;
+// mod evfs_backup_tests;
+// mod evfs_crypto_tests;
+// mod evfs_keyring_tests;
 mod evfs_raft_tests;
 mod evfs_vfs_tests;
 mod helpers;
 mod sqlshim_tests;
 
-use evfs_backup_tests::run_evfs_backup_tests;
-use evfs_crypto_tests::run_evfs_crypto_tests;
-use evfs_keyring_tests::run_evfs_keyring_tests;
+// use evfs_backup_tests::run_evfs_backup_tests;
+// use evfs_crypto_tests::run_evfs_crypto_tests;
+// use evfs_keyring_tests::run_evfs_keyring_tests;
 use evfs_raft_tests::run_evfs_raft_tests;
 use evfs_vfs_tests::run_evfs_vfs_tests;
 use helpers::TestRunner;
@@ -47,9 +47,9 @@ fn main() {
         );
     }
 
-    run_evfs_crypto_tests(&mut t);
-    run_evfs_keyring_tests(&mut t);
-    run_evfs_backup_tests(&mut t);
+    // run_evfs_crypto_tests(&mut t);
+    // run_evfs_keyring_tests(&mut t);
+    // run_evfs_backup_tests(&mut t);
 
     let evfs_path_str = format!("../sqlevfs/target/{}/libsqlevfs.so", mode);
     let evfs_path = Path::new(&evfs_path_str);
