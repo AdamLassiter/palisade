@@ -32,15 +32,6 @@ enum Engine {
     Evfs,
 }
 
-impl Engine {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Plain => "sqlite",
-            Self::Evfs => "evfs",
-        }
-    }
-}
-
 pub(crate) fn run_evfs_perf_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("Performance: EVFS Overhead vs Plain SQLite");
 

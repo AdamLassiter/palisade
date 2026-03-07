@@ -1,11 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-// use sqlevfs::{
-//     kms::{KmsProvider, local::DeviceKeyProvider},
-// };
+use std::path::PathBuf;
 
 pub(crate) struct TestDir {
     dir: tempfile::TempDir,
