@@ -42,8 +42,16 @@ impl ReplicaNetwork {
 impl RaftNetworkFactory<RaftConfig> for ReplicaNetwork {
     type Network = PeerNetwork;
 
-    async fn new_client(&mut self, target: NodeId, _node: &BasicNode) -> Self::Network {
-        let addr = self.peers.get(&target).cloned().unwrap_or_default();
+    async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
+        let addr = self
+            .peers
+            .get(&target)
+            .cloned()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| node.addr.clone());
+        if !addr.is_empty() {
+            self.peers.insert(target, addr.clone());
+        }
         PeerNetwork {
             addr,
             target,
@@ -220,11 +228,7 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
         let mut last_err: Option<RPCError<NodeId, BasicNode, RaftError<NodeId>>> = None;
         let mut resp = None;
         for attempt in 0..3 {
-            let call = self
-                .ensure_client()
-                .await?
-                .request_vote(grpc_req.clone())
-                .await;
+            let call = self.ensure_client().await?.request_vote(grpc_req).await;
             match call {
                 Ok(r) => {
                     resp = Some(r.into_inner());

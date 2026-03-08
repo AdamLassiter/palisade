@@ -4,6 +4,7 @@ pub mod io;
 pub mod keyring;
 pub mod kms;
 pub mod policy;
+mod raft_hooks;
 pub mod vfs;
 
 use std::{
@@ -182,7 +183,14 @@ pub extern "C" fn sqlite3_sqlevfs_init(
     };
 
     match EvfsBuilder::new(mode).register() {
-        Ok(_) => libsqlite3_sys::SQLITE_OK_LOAD_PERMANENTLY,
+        Ok(_) => {
+            if !_db.is_null() {
+                let db = _db.cast::<libsqlite3_sys::sqlite3>();
+                raft_hooks::register_raft_sql_functions(db);
+                raft_hooks::try_autostart(db);
+            }
+            libsqlite3_sys::SQLITE_OK_LOAD_PERMANENTLY
+        }
         Err(e) => {
             eprintln!("sqlevfs: registration failed: {e}");
             SQLITE_ERROR

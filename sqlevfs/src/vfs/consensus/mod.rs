@@ -13,6 +13,7 @@
 
 pub mod handle;
 pub mod network;
+pub mod replay;
 pub mod rpc;
 pub mod wal;
 

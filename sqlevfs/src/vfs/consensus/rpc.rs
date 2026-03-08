@@ -13,7 +13,6 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::vfs::consensus::{
     NodeId,
-    RaftConfig,
     RaftNode,
     proto::{
         self,
@@ -72,7 +71,7 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<proto::AppendEntriesResponse>, Status> {
         let req = request.into_inner();
 
-        let entries: Vec<Entry<RaftConfig>> = req
+        let entries = req
             .entries
             .into_iter()
             .map(|e| {
@@ -103,7 +102,8 @@ impl RaftService for RaftGrpcService {
                     payload,
                 })
             })
-            .collect::<Result<Vec<_>, Status>>()?;
+            .collect::<Result<Vec<_>, Box<Status>>>();
+        let entries = entries.map_err(|e| *e)?;
 
         let raft_req = AppendEntriesRequest {
             vote: Vote::new_committed(req.term, req.leader_id),

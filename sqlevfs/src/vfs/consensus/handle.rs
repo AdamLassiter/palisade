@@ -1,10 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -190,6 +191,61 @@ impl RaftHandle {
             .initialize(members)
             .await
             .context("failed to initialize raft cluster")?;
+        Ok(())
+    }
+
+    /// Return the current voter-id set from raft metrics.
+    pub fn voter_ids(&self) -> BTreeSet<NodeId> {
+        self.metrics()
+            .membership_config
+            .membership()
+            .voter_ids()
+            .collect()
+    }
+
+    /// Add a learner to the local leader's cluster.
+    pub async fn add_learner(
+        &self,
+        node_id: NodeId,
+        rpc_addr: String,
+        blocking: bool,
+    ) -> Result<()> {
+        self.raft
+            .add_learner(node_id, BasicNode::new(rpc_addr), blocking)
+            .await
+            .context("failed to add raft learner")?;
+        Ok(())
+    }
+
+    /// Change cluster membership to the provided voter set.
+    pub async fn change_membership(&self, voters: BTreeSet<NodeId>, retain: bool) -> Result<()> {
+        self.raft
+            .change_membership(voters, retain)
+            .await
+            .context("failed to change raft membership")?;
+        Ok(())
+    }
+
+    /// Wait until membership voters match `expected`.
+    pub async fn wait_for_voter_ids(
+        &self,
+        expected: BTreeSet<NodeId>,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.raft
+            .wait(Some(timeout))
+            .voter_ids(expected, "wait for voter membership")
+            .await
+            .context("timed out waiting for raft voter membership")?;
+        Ok(())
+    }
+
+    /// Shutdown the local raft runtime.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.raft
+            .shutdown()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to shutdown raft: {e:?}"))?;
         Ok(())
     }
 }

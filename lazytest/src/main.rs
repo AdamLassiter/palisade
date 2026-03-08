@@ -93,7 +93,10 @@ fn main() {
             println!("\n⚠ Skipping EVFS VFS tests ({})", evfs_path.display());
         }
 
-        run_evfs_raft_tests(&mut t);
+        match run_evfs_raft_tests(&mut t, mode) {
+            Ok(()) => {}
+            Err(e) => t.fail("evfs raft test suite", &e),
+        }
     }
 
     if run_perf {
