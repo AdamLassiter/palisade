@@ -16,7 +16,7 @@ fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
 }
 
 pub(crate) fn run_evfs_raft_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
-    t.section("EVFS Raft SQL Control Plane");
+    t.section("evfs Raft SQL Control Plane");
 
     let tmp = TestDir::new("evfs-raft-");
     let keyfile = tmp.write_keyfile("raft.key", [0xCD; 32]);

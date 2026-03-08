@@ -125,6 +125,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_rewrite_passthrough_normal_sql() {
+        let sql = "BEGIN IMMEDIATE;";
+        assert!(parse_and_rewrite(sql).is_none());
+    }
+
+    #[test]
     fn test_rewrite_define_label() {
         let sql = "DEFINE LABEL 'role=admin';";
         let rewritten = parse_and_rewrite(sql).unwrap();

@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod evfs_raft_perf_tests;
 mod evfs_raft_tests;
 mod evfs_vfs_tests;
 mod helpers;
@@ -12,6 +13,7 @@ mod sqlevfs_perf_tests;
 mod sqlsec_perf_tests;
 mod sqlshim_perf_tests;
 
+use evfs_raft_perf_tests::run_evfs_raft_perf_tests;
 use evfs_raft_tests::run_evfs_raft_tests;
 use evfs_vfs_tests::run_evfs_vfs_tests;
 use helpers::TestRunner;
@@ -89,17 +91,22 @@ fn main() {
                 Ok(()) => {}
                 Err(e) => t.fail("evfs VFS test suite", &e),
             }
+            if !run_perf {
+                match run_evfs_raft_tests(&mut t, mode) {
+                    Ok(()) => {}
+                    Err(e) => t.fail("evfs raft test suite", &e),
+                }
+            }
         } else {
             println!("\n⚠ Skipping EVFS VFS tests ({})", evfs_path.display());
-        }
-
-        match run_evfs_raft_tests(&mut t, mode) {
-            Ok(()) => {}
-            Err(e) => t.fail("evfs raft test suite", &e),
         }
     }
 
     if run_perf {
+        match run_evfs_raft_perf_tests(&mut t, mode) {
+            Ok(()) => {}
+            Err(e) => t.fail("sqlevfs raft performance suite", &e),
+        }
         match run_evfs_perf_tests(&mut t, mode) {
             Ok(()) => {}
             Err(e) => t.fail("sqlevfs performance suite", &e),
@@ -111,6 +118,12 @@ fn main() {
         match run_sqlsec_perf_tests(&mut t, mode) {
             Ok(()) => {}
             Err(e) => t.fail("sqlsec performance suite", &e),
+        }
+        if !perf_only {
+            match run_evfs_raft_tests(&mut t, mode) {
+                Ok(()) => {}
+                Err(e) => t.fail("evfs raft test suite", &e),
+            }
         }
     }
 

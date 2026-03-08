@@ -47,13 +47,21 @@ impl Keyring {
     pub fn set_sidecar_path(&self, db_path: &Path) {
         let mut guard = self.sidecar_path.write();
         let sidecar = db_path.with_extension("evfs-keyring");
-        // Try to load existing keyring.
+        let changed = guard.as_ref() != Some(&sidecar);
+
+        // Switching databases must not leak DEKs/state from previous sidecars.
+        if changed {
+            self.cache.write().clear();
+            *self.persisted.write() = PersistedKeyring::default();
+        }
+
         if sidecar.exists()
             && let Ok(data) = std::fs::read(&sidecar)
             && let Ok(kr) = bincode::decode_from_slice(&data, config::standard()).map(|r| r.0)
         {
             *self.persisted.write() = kr;
         }
+
         *guard = Some(sidecar);
     }
 
@@ -256,5 +264,36 @@ mod tests {
         let provider = MockKmsProvider::new();
         let keyring = Keyring::new(provider.clone());
         let _ = keyring.provider();
+    }
+
+    #[test]
+    fn test_set_sidecar_path_resets_state_on_db_switch() {
+        let provider = MockKmsProvider::new();
+        let keyring = Keyring::new(provider.clone());
+
+        let root = std::env::temp_dir().join(format!(
+            "sqlevfs-keyring-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db1 = root.join("db1.sqlite");
+        let db2 = root.join("db2.sqlite");
+
+        keyring.set_sidecar_path(&db1);
+        keyring.dek_for(&KeyScope::Database).unwrap();
+        assert_eq!(keyring.cache.read().len(), 1);
+        assert_eq!(keyring.persisted.read().keys.len(), 1);
+
+        keyring.set_sidecar_path(&db2);
+        assert_eq!(keyring.cache.read().len(), 0);
+        assert_eq!(keyring.persisted.read().keys.len(), 0);
+
+        let _ = std::fs::remove_file(db1.with_extension("evfs-keyring"));
+        let _ = std::fs::remove_file(db2.with_extension("evfs-keyring"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

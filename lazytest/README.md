@@ -35,7 +35,7 @@ target/debug/lazytest --perf-only
 
 ## Performance Suite
 
-`--perf` runs two performance comparisons:
+`--perf` runs performance comparisons for:
 
 1. EVFS overhead:
 - plain SQLite (default VFS)
@@ -57,7 +57,20 @@ It reports median timings and overhead for:
 - secured-view vs physical-table point reads (sqlsec)
 - secured-view vs physical-table scans (sqlsec)
 
-This provides a quick local signal for how much EVFS, SQLSHIM, and SQLSEC add relative to unmodified SQLite.
+3. EVFS raft-like workload overhead (single-node):
+- plain SQLite (default VFS)
+- SQLite with `sqlevfs` (`vfs=evfs`)
+- SQLite with `sqlevfs` raft path (`vfs=evfs_raft`, single-node `evfs_raft_init`)
+
+It reports median timings for:
+
+- seed transaction
+- transfer transactions (many small commits)
+- point reads
+- range reads
+- total raft-like workload
+
+This provides a quick local signal for how much EVFS, EVFS Raft path, SQLSHIM, and SQLSEC add relative to unmodified SQLite.
 
 ## Notes
 

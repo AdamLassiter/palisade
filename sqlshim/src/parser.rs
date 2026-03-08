@@ -74,18 +74,17 @@ impl CustomParser {
     }
 
     /// Parse and rewrite a single statement
-    pub fn parse_rewrite(&mut self) -> Result<String, ParserError> {
+    pub fn parse_rewrite(&mut self) -> Result<Option<String>, ParserError> {
         let Self { parser, registry } = self;
         if let Some(plugin) = registry.find_match(parser) {
             consume_prefix(parser, plugin.prefix())?;
             let stmt = plugin.parse(parser)?;
             let rewritten = plugin.rewrite(stmt);
-            return Ok(rewritten);
+            return Ok(Some(rewritten));
         }
 
-        // Fall back to standard SQL parsing
-        let stmt = self.parser.parse_statement()?;
-        Ok(stmt.to_string())
+        // Standard SQL should pass through unchanged.
+        Ok(None)
     }
 }
 
@@ -225,7 +224,7 @@ impl ParserExt for Parser<'_> {
 /// Convenience function matching original API
 pub fn parse_rewrite(sql: &str) -> Option<String> {
     let mut parser = CustomParser::new(sql, &PLUGIN_REGISTRY).ok()?;
-    parser.parse_rewrite().ok()
+    parser.parse_rewrite().ok().flatten()
 }
 
 /// Convenience function matching original API

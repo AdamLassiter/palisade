@@ -1076,6 +1076,60 @@ unsafe extern "C" fn evfs_current_time_int64(vfs: *mut sqlite3_vfs, p_time: *mut
     }
 }
 
+unsafe extern "C" fn evfs_dlopen(vfs: *mut sqlite3_vfs, z_filename: *const c_char) -> *mut c_void {
+    if debug() {
+        eprintln!("sqlevfs: xDlOpen");
+    }
+    unsafe {
+        let global = &*((*vfs).pAppData as *const EvfsGlobal);
+        match (*global.inner_vfs).xDlOpen {
+            Some(f) => f(global.inner_vfs, z_filename),
+            None => ptr::null_mut(),
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_dlerror(vfs: *mut sqlite3_vfs, n_byte: c_int, z_err_msg: *mut c_char) {
+    if debug() {
+        eprintln!("sqlevfs: xDlError");
+    }
+    unsafe {
+        let global = &*((*vfs).pAppData as *const EvfsGlobal);
+        if let Some(f) = (*global.inner_vfs).xDlError {
+            f(global.inner_vfs, n_byte, z_err_msg);
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_dlsym(
+    vfs: *mut sqlite3_vfs,
+    handle: *mut c_void,
+    z_symbol: *const c_char,
+) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const c_char)> {
+    if debug() {
+        eprintln!("sqlevfs: xDlSym");
+    }
+    unsafe {
+        let global = &*((*vfs).pAppData as *const EvfsGlobal);
+        match (*global.inner_vfs).xDlSym {
+            Some(f) => f(global.inner_vfs, handle, z_symbol),
+            None => None,
+        }
+    }
+}
+
+unsafe extern "C" fn evfs_dlclose(vfs: *mut sqlite3_vfs, handle: *mut c_void) {
+    if debug() {
+        eprintln!("sqlevfs: xDlClose");
+    }
+    unsafe {
+        let global = &*((*vfs).pAppData as *const EvfsGlobal);
+        if let Some(f) = (*global.inner_vfs).xDlClose {
+            f(global.inner_vfs, handle);
+        }
+    }
+}
+
 // -- Registration ----------------------------------------------------
 
 /// Configuration for VFS registration.
@@ -1136,10 +1190,10 @@ pub fn register_evfs(name: &str, cfg: EvfsConfig) -> anyhow::Result<()> {
         xDelete: Some(evfs_delete),
         xAccess: Some(evfs_access),
         xFullPathname: Some(evfs_full_pathname),
-        xDlOpen: None,
-        xDlError: None,
-        xDlSym: None,
-        xDlClose: None,
+        xDlOpen: Some(evfs_dlopen),
+        xDlError: Some(evfs_dlerror),
+        xDlSym: Some(evfs_dlsym),
+        xDlClose: Some(evfs_dlclose),
         xRandomness: Some(evfs_randomness),
         xSleep: Some(evfs_sleep),
         xCurrentTime: Some(evfs_current_time),
