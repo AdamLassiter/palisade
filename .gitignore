@@ -1,2 +1,8 @@
+# Hidden files
+.*
+
+# Build artifacts
 target
+
+# Database files
 test.db

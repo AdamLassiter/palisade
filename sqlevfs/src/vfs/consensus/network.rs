@@ -22,6 +22,7 @@ use crate::vfs::consensus::{
     NodeId,
     RaftConfig,
     proto::{self, raft_service_client::RaftServiceClient},
+    wal::WalRecord,
 };
 
 const TAG_BLANK: i64 = i64::MIN;
@@ -120,22 +121,36 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
         let mut entries = Vec::with_capacity(req.entries.len());
         for e in req.entries {
             match e.payload {
-                EntryPayload::Normal(frame) => entries.push(proto::LogEntry {
+                EntryPayload::Normal(record) => entries.push(proto::LogEntry {
                     index: e.log_id.index,
                     term: e.log_id.leader_id.term,
-                    frame: Some(proto::WalFrame {
-                        wal_offset: frame.wal_offset,
-                        data: frame.data,
-                        page_no: frame.page_no,
+                    record: Some(match record {
+                        WalRecord::Header { data } => proto::WalRecord {
+                            kind: 1,
+                            wal_offset: 0,
+                            data,
+                            page_no: 0,
+                        },
+                        WalRecord::Frame {
+                            wal_offset,
+                            data,
+                            page_no,
+                        } => proto::WalRecord {
+                            kind: 0,
+                            wal_offset,
+                            data,
+                            page_no,
+                        },
                     }),
                 }),
                 EntryPayload::Blank => entries.push(proto::LogEntry {
                     index: e.log_id.index,
                     term: e.log_id.leader_id.term,
-                    frame: Some(proto::WalFrame {
+                    record: Some(proto::WalRecord {
+                        kind: 2,
                         wal_offset: TAG_BLANK,
-                        page_no: 0,
                         data: Vec::new(),
+                        page_no: 0,
                     }),
                 }),
                 EntryPayload::Membership(membership) => {
@@ -149,10 +164,11 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
                     entries.push(proto::LogEntry {
                         index: e.log_id.index,
                         term: e.log_id.leader_id.term,
-                        frame: Some(proto::WalFrame {
+                        record: Some(proto::WalRecord {
+                            kind: 3,
                             wal_offset: TAG_MEMBERSHIP,
-                            page_no: 0,
                             data: encoded,
+                            page_no: 0,
                         }),
                     });
                 }

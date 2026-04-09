@@ -17,19 +17,21 @@ message VoteResponse {
 
 // -- Append Entries ---------------------------------------------------
 
-message WalFrame {
-    // Byte offset within the WAL file where this frame begins.
-    int64  wal_offset = 1;
-    // Raw (already-encrypted) frame bytes (page_size + 24).
-    bytes  data       = 2;
-    // 1-based page number this frame covers.
-    uint32 page_no    = 3;
+message WalRecord {
+    // 0 = frame, 1 = header, 2 = blank, 3 = membership.
+    uint32 kind       = 1;
+    // Byte offset within the WAL file where this record begins.
+    int64  wal_offset = 2;
+    // Raw record bytes.
+    bytes  data       = 3;
+    // 1-based page number this frame covers (frame records only).
+    uint32 page_no    = 4;
 }
 
 message LogEntry {
     uint64   index = 1;
     uint64   term  = 2;
-    WalFrame frame = 3;
+    WalRecord record = 3;
 }
 
 message AppendEntriesRequest {

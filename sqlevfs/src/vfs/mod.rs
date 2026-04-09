@@ -217,7 +217,7 @@ unsafe fn wal_read_encrypted(
 unsafe fn wal_write_encrypted(
     inner: *mut sqlite3_file,
     cryptor: &PageCryptor,
-    wal_state: Option<&mut WalFileState>,
+    mut wal_state: Option<&mut WalFileState>,
     buf: *const c_void,
     i_amt: c_int,
     i_ofst: i64,
@@ -242,6 +242,9 @@ unsafe fn wal_write_encrypted(
                 );
                 if rc != SQLITE_OK {
                     return rc;
+                }
+                if let Some(ws) = wal_state.as_deref_mut() {
+                    ws.push(&inp[src_off..src_off + len], hdr_start);
                 }
             }
         }
@@ -310,7 +313,7 @@ unsafe fn wal_write_encrypted(
             }
 
             if let Some(ws) = wal_state.as_deref_mut() {
-                let _frames: Vec<(i64, u32, Vec<u8>)> = ws.push(&frame, frame_off);
+                ws.push(&frame, frame_off);
             }
         }
 
@@ -651,8 +654,7 @@ unsafe extern "C" fn evfs_write(
 
             // Buffer for WAL replication before hitting the OS.
             if let Some(ws) = (*(*efile).wal_state).as_mut() {
-                let _frames: Vec<(i64, u32, Vec<u8>)> = ws.push(&page_buf, i_ofst);
-                // Full frame accumulation and Raft submission happen in xSync.
+                ws.push(&page_buf, i_ofst);
             }
 
             return ((*(*inner).pMethods).xWrite.unwrap())(
@@ -724,7 +726,7 @@ unsafe extern "C" fn evfs_write(
 
             // Buffer WAL frame bytes for replication.
             if let Some(ws) = (*(*efile).wal_state).as_mut() {
-                let _frames: Vec<(i64, u32, Vec<u8>)> = ws.push(&page_buf, p_start);
+                ws.push(&page_buf, p_start);
             }
 
             let rc = ((*(*inner).pMethods).xWrite.unwrap())(
@@ -783,25 +785,21 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
         // Drain any fully-formed frames remaining in the accumulator.
         // (In normal operation these were already extracted by xWrite,
         // but a partial trailing write might have left residue.)
-        let frames: Vec<(i64, u32, Vec<u8>)> = ws.push(&[], ws.pending_offset);
+        let records = ws.drain_for_sync();
 
-        for (offset, page_no, data) in frames {
+        for record in records {
             let handle = raft.clone();
             // We are inside an unsafe extern "C" fn; spawn a blocking
             // task on the Tokio runtime that was created alongside the
             // Raft handle.
-            let result = tokio::runtime::Handle::try_current()
-                .ok()
-                .map(|h| h.block_on(handle.submit_frame(offset, page_no, data)));
+            let result = handle
+                .runtime_handle()
+                .block_on(handle.submit_record(record));
 
             match result {
-                Some(Ok(())) => {}
-                Some(Err(e)) => {
+                Ok(()) => {}
+                Err(e) => {
                     eprintln!("sqlevfs: Raft submit_frame failed: {e}");
-                    return SQLITE_IOERR;
-                }
-                None => {
-                    eprintln!("sqlevfs: No Tokio runtime available for Raft sync");
                     return SQLITE_IOERR;
                 }
             }

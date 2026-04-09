@@ -37,6 +37,7 @@ use libsqlite3_sys::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::runtime::{Builder, Runtime};
+use tonic::transport::Endpoint;
 
 use crate::{
     EvfsBuilder,
@@ -93,8 +94,14 @@ impl RaftManager {
     }
 
     fn start_node(&mut self, cfg: RaftSqlConfig) -> Result<()> {
-        if self.nodes.contains_key(&cfg.raft_vfs_name) {
-            anyhow::bail!("raft VFS '{}' is already active", cfg.raft_vfs_name);
+        if let Some(existing) = self.nodes.get(&cfg.raft_vfs_name) {
+            if existing.config.matches_start_request(&cfg) {
+                return Ok(());
+            }
+            anyhow::bail!(
+                "raft VFS '{}' is already active with a different configuration",
+                cfg.raft_vfs_name
+            );
         }
 
         let mode = mode_from_env()?;
@@ -110,14 +117,18 @@ impl RaftManager {
         let peers = cfg.peers.clone();
         let sink_for_apply = sink.clone();
         let sink_for_truncate = sink.clone();
+        let skip_local_replay = cfg.peers.is_empty();
         let raft_result = self.rt.block_on(async {
             RaftHandle::start(
                 cfg.node_id,
                 peers,
-                move |wal_offset, _page_no, data| {
+                move |record| {
+                    if skip_local_replay {
+                        return Ok(());
+                    }
                     sink_for_apply
-                        .apply_frame(wal_offset, data)
-                        .context("follower replay apply_frame failed")
+                        .apply_record(&record)
+                        .context("follower replay apply_record failed")
                 },
                 Some(Box::new(move |offset| {
                     sink_for_truncate
@@ -245,6 +256,23 @@ impl RaftManager {
     }
 }
 
+impl RaftSqlConfig {
+    fn matches_start_request(&self, other: &Self) -> bool {
+        self.node_id == other.node_id
+            && self.listen_addr == other.listen_addr
+            && self.peers == other.peers
+            && self.vfs_name == other.vfs_name
+            && self.raft_vfs_name == other.raft_vfs_name
+            && self.page_size == other.page_size
+            && self.reserve_size == other.reserve_size
+            && self.replay_target.raft_vfs_name == other.replay_target.raft_vfs_name
+            && self.replay_target.db_path == other.replay_target.db_path
+            && self.replay_target.wal_path == other.replay_target.wal_path
+            && self.replay_target.shm_path == other.replay_target.shm_path
+            && self.replay_target.page_size == other.replay_target.page_size
+    }
+}
+
 static RAFT_MANAGER: OnceLock<Mutex<RaftManager>> = OnceLock::new();
 
 fn manager() -> Result<&'static Mutex<RaftManager>> {
@@ -282,11 +310,23 @@ fn parse_peers_json(peers_json: &str) -> Result<HashMap<NodeId, String>> {
     let peers: HashMap<NodeId, String> =
         serde_json::from_str(peers_json).context("failed to parse peers_json as object map")?;
     for (id, addr) in &peers {
-        if addr.is_empty() {
-            anyhow::bail!("peer {id} has empty address");
-        }
+        validate_rpc_addr(addr).with_context(|| format!("peer {id} has invalid rpc address"))?;
     }
     Ok(peers)
+}
+
+fn validate_rpc_addr(addr: &str) -> Result<()> {
+    if addr.is_empty() {
+        anyhow::bail!("rpc_addr must not be empty");
+    }
+    let has_http_scheme = addr.starts_with("http://") || addr.starts_with("https://");
+    if !has_http_scheme {
+        anyhow::bail!("rpc_addr must be a valid gRPC URI such as http://127.0.0.1:5002");
+    }
+    Endpoint::from_shared(addr.to_string()).map_err(|e| {
+        anyhow::anyhow!("rpc_addr must be a valid gRPC URI such as http://127.0.0.1:5002: {e}")
+    })?;
+    Ok(())
 }
 
 fn sidecar_path_for_db(db_path: &Path) -> Option<PathBuf> {
@@ -605,10 +645,12 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
         }
 
         let result = (|| -> Result<String> {
+            // listen_addr is the raw socket address used by the local gRPC server bind.
             let listen_addr = get_required_text(argv, 1, "listen_addr")?;
             let _parsed: SocketAddr = listen_addr
                 .parse()
                 .with_context(|| format!("invalid listen_addr '{listen_addr}'"))?;
+            // peers_json values are URI-form endpoints used by outbound gRPC clients.
             let peers_json = get_required_text(argv, 2, "peers_json")?;
             let peers = parse_peers_json(&peers_json)?;
 
@@ -693,6 +735,10 @@ pub(crate) extern "C" fn ffi_evfs_raft_add_node(
                 return;
             }
         };
+        if let Err(e) = validate_rpc_addr(&rpc_addr) {
+            sqlite_error(ctx, "evfs_raft_add_node", e);
+            return;
+        }
         let wait_seconds = if argc == 3 {
             sqlite3_value_int64(*argv.add(2)) as u64
         } else {
@@ -781,7 +827,20 @@ mod tests {
     #[test]
     fn parse_peers_json_rejects_empty_address() {
         let err = parse_peers_json(r#"{"2":""}"#).expect_err("empty address should fail");
-        assert!(err.to_string().contains("empty address"));
+        assert!(err.to_string().contains("invalid rpc address"));
+    }
+
+    #[test]
+    fn parse_peers_json_rejects_bare_socket_address() {
+        let err =
+            parse_peers_json(r#"{"2":"127.0.0.1:5002"}"#).expect_err("bare host:port should fail");
+        assert!(err.to_string().contains("invalid rpc address"));
+    }
+
+    #[test]
+    fn validate_rpc_addr_rejects_malformed_uri() {
+        let err = validate_rpc_addr("http://").expect_err("malformed uri should fail");
+        assert!(err.to_string().contains("valid gRPC URI"));
     }
 
     #[test]

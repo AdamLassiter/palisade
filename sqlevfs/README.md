@@ -52,9 +52,11 @@ If you change page size or reserved space, you can break compatibility with exis
 Current flow:
 
 - SQLite writes WAL bytes through the custom VFS.
-- WAL frames are accumulated and submitted by the leader at `xSync`.
+- The leader accumulates the WAL header plus WAL frames and submits them
+  at `xSync`.
 - Raft commits the entries.
-- The state machine invokes your `apply_fn(wal_offset, page_no, frame_data)` callback for committed frames.
+- The state machine invokes your `apply_fn(record)` callback for committed
+  WAL records so followers can materialize a valid SQLite WAL image.
 
 Current API shape (low-level):
 
@@ -65,6 +67,8 @@ Current API shape (low-level):
 Important limitations right now:
 
 - Log/state storage is in-memory (`WalLogStore`), so crash durability is not production-ready.
+- Readable follower replicas depend on WAL-record replay; checkpointed main-DB
+  snapshotting is not wired yet.
 - SQLite checkpoint -> Raft snapshot integration is not wired yet.
 - Backpressure is not enforced yet (writer can outpace replication).
 - `EvfsBuilder` currently registers encryption-only mode (`raft: None`); Raft mode uses lower-level registration APIs.

@@ -20,7 +20,7 @@ use libsqlite3_sys::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::vfs::consensus::NodeId;
+use crate::vfs::consensus::{NodeId, wal::WalRecord};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ReplayTargetConfig {
@@ -62,7 +62,7 @@ struct VfsWalFile {
 unsafe impl Send for VfsWalFile {}
 
 impl VfsWalFile {
-    fn open(path: &str, vfs_name: &str) -> Result<Self> {
+    fn open_with_flags(path: &str, vfs_name: &str, flags: c_int) -> Result<Self> {
         let c_vfs = if vfs_name.is_empty() {
             None
         } else {
@@ -86,8 +86,6 @@ impl VfsWalFile {
 
         let c_path = CString::new(path).context("invalid wal path")?;
         let mut out_flags: c_int = 0;
-        let flags =
-            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_WAL | SQLITE_OPEN_MAIN_DB;
 
         // SAFETY: xOpen is called with a valid vfs, allocated sqlite3_file buffer, and C path.
         let rc = unsafe {
@@ -195,25 +193,48 @@ impl Drop for VfsWalFile {
 
 /// Local follower replay sink that materializes committed raft WAL
 /// frames onto disk in deterministic offset order.
+///
+/// Important: replay writes the SQLite WAL header plus committed frames
+/// into the follower WAL file and also materializes committed page images
+/// into the follower main DB file so passive readers can validate replica
+/// state without a separate checkpoint integration step.
 pub struct FollowerReplaySink {
     target: ReplayTargetConfig,
-    file: Mutex<VfsWalFile>,
+    wal_file: Mutex<VfsWalFile>,
+    db_file: Mutex<VfsWalFile>,
     state: Mutex<ReplayState>,
 }
 
 impl FollowerReplaySink {
     pub fn open(target: ReplayTargetConfig) -> Result<Arc<Self>> {
-        let file = VfsWalFile::open(&target.wal_path, &target.io_vfs_name).with_context(|| {
+        let wal_file = VfsWalFile::open_with_flags(
+            &target.wal_path,
+            &target.io_vfs_name,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_WAL | SQLITE_OPEN_MAIN_DB,
+        )
+        .with_context(|| {
             format!(
                 "failed to open follower WAL path '{}' via sqlite vfs '{}'",
                 target.wal_path, target.io_vfs_name
+            )
+        })?;
+        let db_file = VfsWalFile::open_with_flags(
+            &target.db_path,
+            &target.io_vfs_name,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_MAIN_DB,
+        )
+        .with_context(|| {
+            format!(
+                "failed to open follower DB path '{}' via sqlite vfs '{}'",
+                target.db_path, target.io_vfs_name
             )
         })?;
 
         let frame_size = target.page_size as i64 + 24;
         Ok(Arc::new(Self {
             target,
-            file: Mutex::new(file),
+            wal_file: Mutex::new(wal_file),
+            db_file: Mutex::new(db_file),
             state: Mutex::new(ReplayState {
                 stats: ReplayStats {
                     last_applied_offset: -1,
@@ -224,67 +245,114 @@ impl FollowerReplaySink {
         }))
     }
 
-    pub fn apply_frame(&self, wal_offset: i64, frame_data: &[u8]) -> Result<()> {
+    pub fn apply_record(&self, record: &WalRecord) -> Result<()> {
         let started = Instant::now();
         let mut st = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
 
-        let expected_len = st.frame_size as usize;
-        if frame_data.len() != expected_len {
-            st.stats.replay_errors += 1;
-            anyhow::bail!(
-                "invalid WAL frame size: got={}, expected={expected_len}",
-                frame_data.len()
-            );
-        }
-        if wal_offset < 32 {
-            st.stats.replay_errors += 1;
-            anyhow::bail!("invalid WAL frame offset: {wal_offset}");
-        }
-        if (wal_offset - 32) % st.frame_size != 0 {
-            st.stats.replay_errors += 1;
-            anyhow::bail!(
-                "unaligned WAL frame offset: {wal_offset} (frame_size={})",
-                st.frame_size
-            );
-        }
+        match record {
+            WalRecord::Header { data } => {
+                if data.len() != 32 {
+                    st.stats.replay_errors += 1;
+                    anyhow::bail!("invalid WAL header size: got={}, expected=32", data.len());
+                }
 
-        // Idempotent replay of already-applied offsets.
-        if wal_offset <= st.stats.last_applied_offset {
-            return Ok(());
+                let mut f = self
+                    .wal_file
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+                f.truncate(0)
+                    .context("failed to truncate WAL file for new header")?;
+                f.write_at(0, data)
+                    .context("failed to write WAL header at offset 0")?;
+                f.sync()
+                    .context("failed to sync WAL replay file after header apply")?;
+
+                st.stats.applied_bytes += data.len() as u64;
+                st.stats.last_applied_offset = 0;
+                st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
+                drop(f);
+
+                self.invalidate_shm_locked(&mut st);
+                Ok(())
+            }
+            WalRecord::Frame {
+                wal_offset,
+                data: frame_data,
+                page_no,
+            } => {
+                let wal_offset = *wal_offset;
+                let expected_len = st.frame_size as usize;
+                if frame_data.len() != expected_len {
+                    st.stats.replay_errors += 1;
+                    anyhow::bail!(
+                        "invalid WAL frame size: got={}, expected={expected_len}",
+                        frame_data.len()
+                    );
+                }
+                if wal_offset < 32 {
+                    st.stats.replay_errors += 1;
+                    anyhow::bail!("invalid WAL frame offset: {wal_offset}");
+                }
+                if (wal_offset - 32) % st.frame_size != 0 {
+                    st.stats.replay_errors += 1;
+                    anyhow::bail!(
+                        "unaligned WAL frame offset: {wal_offset} (frame_size={})",
+                        st.frame_size
+                    );
+                }
+
+                // Idempotent replay of already-applied offsets.
+                if wal_offset <= st.stats.last_applied_offset {
+                    return Ok(());
+                }
+
+                let expected_next = if st.stats.last_applied_offset <= 0 {
+                    32
+                } else {
+                    st.stats.last_applied_offset + st.frame_size
+                };
+                if wal_offset != expected_next {
+                    st.stats.replay_errors += 1;
+                    anyhow::bail!(
+                        "out-of-order WAL replay: got offset {wal_offset}, expected {expected_next}"
+                    );
+                }
+
+                let mut f = self
+                    .wal_file
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+                f.write_at(wal_offset, frame_data)
+                    .with_context(|| format!("failed to write WAL frame at offset {wal_offset}"))?;
+                f.sync()
+                    .context("failed to sync WAL replay file after frame apply")?;
+                drop(f);
+
+                let page_offset = (*page_no as i64 - 1) * self.target.page_size as i64;
+                let page_bytes = &frame_data[24..];
+                let mut db = self
+                    .db_file
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("replay DB file lock poisoned"))?;
+                db.write_at(page_offset, page_bytes).with_context(|| {
+                    format!("failed to materialize DB page {page_no} at offset {page_offset}")
+                })?;
+                db.sync()
+                    .context("failed to sync follower DB file after frame apply")?;
+
+                st.stats.last_applied_offset = wal_offset;
+                st.stats.applied_frames += 1;
+                st.stats.applied_bytes += frame_data.len() as u64;
+                st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
+                drop(db);
+
+                self.invalidate_shm_locked(&mut st);
+                Ok(())
+            }
         }
-
-        let expected_next = if st.stats.last_applied_offset < 0 {
-            32
-        } else {
-            st.stats.last_applied_offset + st.frame_size
-        };
-        if wal_offset != expected_next {
-            st.stats.replay_errors += 1;
-            anyhow::bail!(
-                "out-of-order WAL replay: got offset {wal_offset}, expected {expected_next}"
-            );
-        }
-
-        let mut f = self
-            .file
-            .lock()
-            .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
-        f.write_at(wal_offset, frame_data)
-            .with_context(|| format!("failed to write WAL frame at offset {wal_offset}"))?;
-        f.sync()
-            .context("failed to sync WAL replay file after frame apply")?;
-
-        st.stats.last_applied_offset = wal_offset;
-        st.stats.applied_frames += 1;
-        st.stats.applied_bytes += frame_data.len() as u64;
-        st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
-        drop(f);
-
-        self.invalidate_shm_locked(&mut st);
-        Ok(())
     }
 
     pub fn truncate_at(&self, wal_offset: i64) -> Result<()> {
@@ -293,7 +361,7 @@ impl FollowerReplaySink {
             .lock()
             .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
         let f = self
-            .file
+            .wal_file
             .lock()
             .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
 
@@ -321,7 +389,7 @@ impl FollowerReplaySink {
 
     pub fn sync(&self) -> Result<()> {
         let mut f = self
-            .file
+            .wal_file
             .lock()
             .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
         f.sync().context("failed to sync replay WAL file")
@@ -339,7 +407,7 @@ impl FollowerReplaySink {
     }
 
     fn invalidate_shm_locked(&self, st: &mut ReplayState) {
-        let mut f = match self.file.lock() {
+        let mut f = match self.wal_file.lock() {
             Ok(v) => v,
             Err(_) => {
                 st.stats.replay_errors += 1;
@@ -442,12 +510,24 @@ mod tests {
         }
         let tmp = TempDir::new().expect("tmp dir");
         let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
-        let frame = vec![0u8; 4096 + 24];
+        let header = WalRecord::Header {
+            data: vec![0xAA; 32],
+        };
+        let frame = WalRecord::Frame {
+            wal_offset: 32,
+            page_no: 1,
+            data: vec![0u8; 4096 + 24],
+        };
 
-        sink.apply_frame(32, &frame).expect("apply first");
-        sink.apply_frame(32, &frame).expect("idempotent duplicate");
+        sink.apply_record(&header).expect("apply header");
+        sink.apply_record(&frame).expect("apply first");
+        sink.apply_record(&frame).expect("idempotent duplicate");
         let err = sink
-            .apply_frame(32 + 2 * (4096 + 24) as i64, &frame)
+            .apply_record(&WalRecord::Frame {
+                wal_offset: 32 + 2 * (4096 + 24) as i64,
+                page_no: 2,
+                data: vec![0u8; 4096 + 24],
+            })
             .expect_err("out-of-order should fail");
         assert!(err.to_string().contains("out-of-order"));
     }
@@ -461,9 +541,40 @@ mod tests {
         let tmp = TempDir::new().expect("tmp dir");
         let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
         let err = sink
-            .apply_frame(32, &[0u8; 8])
+            .apply_record(&WalRecord::Frame {
+                wal_offset: 32,
+                page_no: 1,
+                data: vec![0u8; 8],
+            })
             .expect_err("short frame should fail");
         assert!(err.to_string().contains("invalid WAL frame size"));
+    }
+
+    #[test]
+    fn replay_writes_header_and_frame_bytes() {
+        if !sqlite_api_is_available() {
+            eprintln!("skipping replay test: sqlite extension API is unavailable");
+            return;
+        }
+        let tmp = TempDir::new().expect("tmp dir");
+        let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
+        let header = WalRecord::Header {
+            data: (0..32u8).collect(),
+        };
+        let mut frame = vec![0u8; 4096 + 24];
+        frame[0..4].copy_from_slice(&3u32.to_be_bytes());
+        let frame_record = WalRecord::Frame {
+            wal_offset: 32,
+            page_no: 3,
+            data: frame.clone(),
+        };
+
+        sink.apply_record(&header).expect("apply header");
+        sink.apply_record(&frame_record).expect("apply frame");
+
+        let wal = std::fs::read(tmp.path().join("follower.db-wal")).expect("read wal");
+        assert_eq!(&wal[..32], &(0..32u8).collect::<Vec<_>>()[..]);
+        assert_eq!(&wal[32..32 + frame.len()], &frame);
     }
 
     #[test]
@@ -474,10 +585,23 @@ mod tests {
         }
         let tmp = TempDir::new().expect("tmp dir");
         let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
+        sink.apply_record(&WalRecord::Header {
+            data: vec![0u8; 32],
+        })
+        .expect("apply header");
         let frame = vec![0u8; 4096 + 24];
-        sink.apply_frame(32, &frame).expect("apply first");
-        sink.apply_frame(32 + (4096 + 24) as i64, &frame)
-            .expect("apply second");
+        sink.apply_record(&WalRecord::Frame {
+            wal_offset: 32,
+            page_no: 1,
+            data: frame.clone(),
+        })
+        .expect("apply first");
+        sink.apply_record(&WalRecord::Frame {
+            wal_offset: 32 + (4096 + 24) as i64,
+            page_no: 2,
+            data: frame,
+        })
+        .expect("apply second");
         sink.truncate_at(32).expect("truncate");
         assert_eq!(sink.stats().last_applied_offset, -1);
     }

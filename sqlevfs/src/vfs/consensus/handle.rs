@@ -11,6 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use openraft::{BasicNode, Config, Raft, RaftMetrics, storage::Adaptor};
 use parking_lot::RwLock;
+use tokio::runtime::Handle;
 
 use crate::vfs::consensus::{
     NodeId,
@@ -18,7 +19,7 @@ use crate::vfs::consensus::{
     TruncateCallback,
     network::ReplicaNetwork,
     rpc::serve_grpc,
-    wal::{WalFrameEntry, WalLogStore, WalStateMachine, WalStorageInner},
+    wal::{WalLogStore, WalRecord, WalStateMachine, WalStorageInner},
 };
 
 /// Cluster handle shared by every `EvfsFile` in the same process.
@@ -27,6 +28,7 @@ use crate::vfs::consensus::{
 pub struct RaftHandle {
     node_id: NodeId,
     raft: RaftNode,
+    runtime_handle: Handle,
     /// Highest WAL byte offset durably committed by Raft.
     /// Updated by [`RaftHandle::submit_frame`] after each commit.
     committed_wal_offset: AtomicU64,
@@ -46,7 +48,7 @@ impl RaftHandle {
     pub async fn start(
         node_id: NodeId,
         peers: HashMap<NodeId, String>,
-        apply_fn: impl Fn(i64, u32, &[u8]) -> Result<()> + Send + Sync + 'static,
+        apply_fn: impl Fn(WalRecord) -> Result<()> + Send + Sync + 'static,
         truncate_cb: Option<TruncateCallback>,
         grpc_listen: Option<SocketAddr>,
     ) -> Result<Arc<Self>> {
@@ -93,6 +95,7 @@ impl RaftHandle {
         let handle = Arc::new(Self {
             node_id,
             raft,
+            runtime_handle: Handle::current(),
             committed_wal_offset: AtomicU64::new(0),
             truncate_cb,
         });
@@ -144,15 +147,11 @@ impl RaftHandle {
     /// Blocks (async) until the entry is committed on a majority.
     /// Called from within `evfs_xSync` so SQLite sees the transaction
     /// as durable only after Raft durability is confirmed.
-    pub async fn submit_frame(&self, wal_offset: i64, page_no: u32, data: Vec<u8>) -> Result<()> {
-        let entry = WalFrameEntry {
-            wal_offset,
-            page_no,
-            data,
-        };
+    pub async fn submit_record(&self, record: WalRecord) -> Result<()> {
+        let wal_offset = record.wal_offset();
 
         self.raft
-            .client_write(entry)
+            .client_write(record)
             .await
             .context("Raft client_write failed")?;
 
@@ -160,6 +159,19 @@ impl RaftHandle {
             .store(wal_offset as u64, Ordering::Release);
 
         Ok(())
+    }
+
+    pub async fn submit_frame(&self, wal_offset: i64, page_no: u32, data: Vec<u8>) -> Result<()> {
+        self.submit_record(WalRecord::Frame {
+            wal_offset,
+            page_no,
+            data,
+        })
+        .await
+    }
+
+    pub fn runtime_handle(&self) -> &Handle {
+        &self.runtime_handle
     }
 
     /// Request a log snapshot and compact old entries.

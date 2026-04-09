@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="debug"
+ENGINE="cluster"
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release)
+      MODE="release"
+      ARGS+=("$1")
+      shift
+      ;;
+    --debug)
+      MODE="debug"
+      ARGS+=("$1")
+      shift
+      ;;
+    --engine)
+      ENGINE="${2:-cluster}"
+      ARGS+=("$1" "$ENGINE")
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+echo "Running loadtest in $MODE mode with engine=$ENGINE..."
+
+if [[ "$MODE" == "release" ]]; then
+  ./cargow build --release
+else
+  ./cargow build
+fi
+
+KEYFILE=/tmp/evfs-loadtest-master.key
+dd if=/dev/urandom of="$KEYFILE" bs=32 count=1 status=none
+
+cd loadtest
+
+SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
+CMD=("./target/$MODE/loadtest" "${ARGS[@]}")
+
+if [[ "$ENGINE" == "baseline" ]]; then
+  "${CMD[@]}"
+else
+  EVFS_KEYFILE="$KEYFILE" \
+    LD_PRELOAD="$SQLSHIM_LIB" \
+    RUST_BACKTRACE=full \
+    RUST_LIB_BACKTRACE=1 \
+    "${CMD[@]}"
+fi

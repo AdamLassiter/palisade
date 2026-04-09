@@ -18,7 +18,7 @@ use crate::vfs::consensus::{
         self,
         raft_service_server::{RaftService, RaftServiceServer},
     },
-    wal::WalFrameEntry,
+    wal::WalRecord,
 };
 
 const TAG_BLANK: i64 = i64::MIN;
@@ -75,25 +75,31 @@ impl RaftService for RaftGrpcService {
             .entries
             .into_iter()
             .map(|e| {
-                let frame = e
-                    .frame
-                    .ok_or_else(|| Status::invalid_argument("append_entries: missing frame"))?;
+                let record = e
+                    .record
+                    .ok_or_else(|| Status::invalid_argument("append_entries: missing record"))?;
 
-                let payload = if frame.wal_offset == TAG_BLANK && frame.page_no == 0 {
+                let payload = if record.kind == 2
+                    || (record.wal_offset == TAG_BLANK && record.page_no == 0)
+                {
                     EntryPayload::Blank
-                } else if frame.wal_offset == TAG_MEMBERSHIP && frame.page_no == 0 {
+                } else if record.kind == 3
+                    || (record.wal_offset == TAG_MEMBERSHIP && record.page_no == 0)
+                {
                     let membership: openraft::Membership<NodeId, openraft::BasicNode> =
-                        serde_json::from_slice(&frame.data).map_err(|err| {
+                        serde_json::from_slice(&record.data).map_err(|err| {
                             Status::invalid_argument(format!(
                                 "append_entries: invalid membership payload: {err}"
                             ))
                         })?;
                     EntryPayload::Membership(membership)
+                } else if record.kind == 1 {
+                    EntryPayload::Normal(WalRecord::Header { data: record.data })
                 } else {
-                    EntryPayload::Normal(WalFrameEntry {
-                        wal_offset: frame.wal_offset,
-                        page_no: frame.page_no,
-                        data: frame.data,
+                    EntryPayload::Normal(WalRecord::Frame {
+                        wal_offset: record.wal_offset,
+                        page_no: record.page_no,
+                        data: record.data,
                     })
                 };
 

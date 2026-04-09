@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use sqlevfs::vfs::consensus::handle::RaftHandle;
+use sqlevfs::vfs::consensus::{handle::RaftHandle, wal::WalRecord};
 
 use crate::common::{sqlite_api_is_available, wait_until};
 
@@ -16,12 +16,18 @@ async fn test_raft_replication_single_node_applies_committed_frame() -> anyhow::
     let node = RaftHandle::start(
         1,
         HashMap::new(),
-        move |wal_offset, page_no, data| {
-            applied_clone.lock().expect("apply lock poisoned").push((
+        move |record| {
+            if let WalRecord::Frame {
                 wal_offset,
                 page_no,
-                data.to_vec(),
-            ));
+                data,
+            } = record
+            {
+                applied_clone
+                    .lock()
+                    .expect("apply lock poisoned")
+                    .push((wal_offset, page_no, data));
+            }
             Ok(())
         },
         None,
@@ -58,12 +64,18 @@ async fn test_raft_replication_single_node_commits_in_order() -> anyhow::Result<
     let node = RaftHandle::start(
         1,
         HashMap::new(),
-        move |wal_offset, page_no, data| {
-            applied_clone.lock().expect("apply lock poisoned").push((
+        move |record| {
+            if let WalRecord::Frame {
                 wal_offset,
                 page_no,
-                data.to_vec(),
-            ));
+                data,
+            } = record
+            {
+                applied_clone
+                    .lock()
+                    .expect("apply lock poisoned")
+                    .push((wal_offset, page_no, data));
+            }
             Ok(())
         },
         None,
@@ -103,11 +115,18 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
     let replica = RaftHandle::start(
         2,
         HashMap::new(),
-        move |wal_offset, page_no, data| {
-            replica_applied_clone
-                .lock()
-                .expect("replica apply lock poisoned")
-                .push((wal_offset, page_no, data.to_vec()));
+        move |record| {
+            if let WalRecord::Frame {
+                wal_offset,
+                page_no,
+                data,
+            } = record
+            {
+                replica_applied_clone
+                    .lock()
+                    .expect("replica apply lock poisoned")
+                    .push((wal_offset, page_no, data));
+            }
             Ok(())
         },
         None,
@@ -131,9 +150,16 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
     let source = RaftHandle::start(
         1,
         HashMap::new(),
-        move |wal_offset, page_no, data| {
-            tx.send((wal_offset, page_no, data.to_vec()))
-                .expect("bridge channel send should succeed");
+        move |record| {
+            if let WalRecord::Frame {
+                wal_offset,
+                page_no,
+                data,
+            } = record
+            {
+                tx.send((wal_offset, page_no, data))
+                    .expect("bridge channel send should succeed");
+            }
             Ok(())
         },
         None,
@@ -192,12 +218,17 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
     let replica_raft = RaftHandle::start(
         22,
         HashMap::new(),
-        move |_wal_offset, _page_no, frame_data| {
-            let sql = std::str::from_utf8(frame_data)
-                .map_err(|e| anyhow::anyhow!("invalid replicated SQL payload: {e}"))?;
-            let conn = Connection::open(&replica_db_for_apply)?;
-            conn.execute(sql, [])?;
-            *replica_applied.lock().expect("applied count lock poisoned") += 1;
+        move |record| {
+            if let WalRecord::Frame {
+                data: frame_data, ..
+            } = record
+            {
+                let sql = std::str::from_utf8(&frame_data)
+                    .map_err(|e| anyhow::anyhow!("invalid replicated SQL payload: {e}"))?;
+                let conn = Connection::open(&replica_db_for_apply)?;
+                conn.execute(sql, [])?;
+                *replica_applied.lock().expect("applied count lock poisoned") += 1;
+            }
             Ok(())
         },
         None,
@@ -219,9 +250,16 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
     let source_raft = RaftHandle::start(
         11,
         HashMap::new(),
-        move |wal_offset, page_no, frame_data| {
-            tx.send((wal_offset, page_no, frame_data.to_vec()))
-                .map_err(|e| anyhow::anyhow!("failed to queue frame for replica: {e}"))?;
+        move |record| {
+            if let WalRecord::Frame {
+                wal_offset,
+                page_no,
+                data,
+            } = record
+            {
+                tx.send((wal_offset, page_no, data))
+                    .map_err(|e| anyhow::anyhow!("failed to queue frame for replica: {e}"))?;
+            }
             Ok(())
         },
         None,

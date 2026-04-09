@@ -20,33 +20,46 @@ use crate::{
     vfs::consensus::{NodeId, RaftConfig},
 };
 
-/// A single WAL frame that forms one Raft log entry.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WalFrameEntry {
-    /// Byte offset within the WAL file where the frame begins.
-    pub wal_offset: i64,
-    /// 1-based SQLite page number.
-    pub page_no: u32,
-    /// Already-encrypted WAL frame bytes (`page_size + 24`).
-    pub data: Vec<u8>,
+/// A single replicated WAL record that forms one Raft log entry.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WalRecord {
+    /// The SQLite WAL header at offset 0 for a WAL generation.
+    Header { data: Vec<u8> },
+    /// A WAL frame at byte offset >= 32.
+    Frame {
+        wal_offset: i64,
+        page_no: u32,
+        data: Vec<u8>,
+    },
+}
+
+impl WalRecord {
+    pub fn wal_offset(&self) -> i64 {
+        match self {
+            Self::Header { .. } => 0,
+            Self::Frame { wal_offset, .. } => *wal_offset,
+        }
+    }
 }
 
 // -- WAL file state (per file descriptor) ----------------------------
 
 /// Per-WAL-file-descriptor state owned by `EvfsFile`.
 ///
-/// The VFS layer accumulates bytes written by SQLite into `frame_buf`
-/// until a complete frame boundary is reached, then hands it off to
-/// the Raft layer via [`RaftHandle::submit_frame`].
+/// The VFS layer accumulates bytes written by SQLite into `pending_buf`
+/// until it has a complete WAL header or frame, then queues those
+/// records for submission at the next `xSync` durability barrier.
 pub struct WalFileState {
     /// Parent database name (used for logging / snapshot tagging).
     pub db_name: String,
-    /// Byte offset of the first unsubmitted byte within the WAL file.
+    /// Byte offset of the first buffered byte within the WAL file.
     pub pending_offset: i64,
-    /// Bytes accumulated since the last complete-frame submission.
-    pub frame_buf: Vec<u8>,
+    /// Bytes accumulated since the last record boundary.
+    pub pending_buf: Vec<u8>,
     /// WAL frame size = page_size + 24-byte frame header.
     pub frame_size: usize,
+    /// Complete WAL records waiting to be submitted on xSync.
+    queued: Vec<WalRecord>,
 }
 
 impl WalFileState {
@@ -54,28 +67,65 @@ impl WalFileState {
         Self {
             db_name: db_name.into(),
             pending_offset: 0,
-            frame_buf: Vec::new(),
+            pending_buf: Vec::new(),
             // Each WAL frame = 24-byte header + one full page.
             frame_size: page_size as usize + 24,
+            queued: Vec::new(),
         }
     }
 
     /// Feed bytes written at `wal_offset` into the accumulator.
-    ///
-    /// Returns every complete frame ready for Raft submission, as
-    /// `(wal_offset, page_no, frame_bytes)`.
-    pub fn push(&mut self, data: &[u8], wal_offset: i64) -> Vec<(i64, u32, Vec<u8>)> {
-        // If the caller jumped (e.g. WAL header re-written), reset.
-        if wal_offset != self.pending_offset + self.frame_buf.len() as i64 {
-            self.frame_buf.clear();
+    pub fn push(&mut self, data: &[u8], wal_offset: i64) {
+        if wal_offset >= 32
+            && (wal_offset - 32) % self.frame_size as i64 == 0
+            && data.len() == self.frame_size
+        {
+            self.queue_frame(wal_offset, data.to_vec());
+            self.pending_offset = wal_offset + self.frame_size as i64;
+            self.pending_buf.clear();
+            return;
+        }
+
+        // If the caller jumped (e.g. WAL header re-written), start a new
+        // WAL generation and discard unsynced records from the old one.
+        if wal_offset != self.pending_offset + self.pending_buf.len() as i64 {
+            self.pending_buf.clear();
+            self.queued.clear();
             self.pending_offset = wal_offset;
         }
 
-        self.frame_buf.extend_from_slice(data);
+        self.pending_buf.extend_from_slice(data);
+        self.extract_complete_records();
+    }
 
-        let mut complete = Vec::new();
-        while self.frame_buf.len() >= self.frame_size {
-            let frame: Vec<u8> = self.frame_buf.drain(..self.frame_size).collect();
+    pub fn drain_for_sync(&mut self) -> Vec<WalRecord> {
+        std::mem::take(&mut self.queued)
+    }
+
+    fn extract_complete_records(&mut self) {
+        loop {
+            if self.pending_offset == 0 {
+                if self.pending_buf.len() < 32 {
+                    break;
+                }
+                let header: Vec<u8> = self.pending_buf.drain(..32).collect();
+                self.pending_offset = 32;
+                self.queued.push(WalRecord::Header { data: header });
+                continue;
+            }
+
+            if self.pending_offset < 32 {
+                // We only know how to materialize a WAL generation starting
+                // from offset 0. Keep buffering until a reset or complete
+                // header arrives.
+                break;
+            }
+
+            if self.pending_buf.len() < self.frame_size {
+                break;
+            }
+
+            let frame: Vec<u8> = self.pending_buf.drain(..self.frame_size).collect();
             let frame_offset = self.pending_offset;
             self.pending_offset += self.frame_size as i64;
 
@@ -86,9 +136,34 @@ impl WalFileState {
             //   16..24 checksum
             let page_no = u32::from_be_bytes(frame[0..4].try_into().unwrap_or([0; 4]));
 
-            complete.push((frame_offset, page_no, frame));
+            self.queued.push(WalRecord::Frame {
+                wal_offset: frame_offset,
+                page_no,
+                data: frame,
+            });
         }
-        complete
+    }
+
+    fn queue_frame(&mut self, wal_offset: i64, data: Vec<u8>) {
+        let page_no = u32::from_be_bytes(data[0..4].try_into().unwrap_or([0; 4]));
+        let replacement = WalRecord::Frame {
+            wal_offset,
+            page_no,
+            data,
+        };
+        if let Some(existing) = self.queued.iter_mut().find(|record| {
+            matches!(
+                record,
+                WalRecord::Frame {
+                    wal_offset: existing_offset,
+                    ..
+                } if *existing_offset == wal_offset
+            )
+        }) {
+            *existing = replacement;
+        } else {
+            self.queued.push(replacement);
+        }
     }
 }
 
@@ -111,7 +186,7 @@ struct LogStoreMeta {
 
 // -- In-memory state machine ------------------------------------------
 
-type ApplyFn = Arc<dyn Fn(i64, u32, &[u8]) -> Result<()> + Send + Sync>;
+type ApplyFn = Arc<dyn Fn(WalRecord) -> Result<()> + Send + Sync>;
 
 /// The WAL state machine: applies committed frames to the local SQLite
 /// database by writing them directly to the WAL file via the OS.
@@ -128,14 +203,12 @@ pub struct WalStateMachine {
     snapshot: Option<Vec<u8>>,
     /// Snapshot metadata.
     snapshot_meta: Option<SnapshotMeta<NodeId, BasicNode>>,
-    /// Callback into the VFS layer: write a frame to the local WAL.
-    ///
-    /// Signature: `(wal_offset, page_no, frame_data) -> Result<()>`
+    /// Callback into the VFS layer: materialize a committed WAL record locally.
     apply_fn: ApplyFn,
 }
 
 impl WalStateMachine {
-    pub fn new(apply_fn: impl Fn(i64, u32, &[u8]) -> Result<()> + Send + Sync + 'static) -> Self {
+    pub fn new(apply_fn: impl Fn(WalRecord) -> Result<()> + Send + Sync + 'static) -> Self {
         Self {
             last_applied: None,
             last_membership: StoredMembership::default(),
@@ -243,16 +316,15 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
 
             match &entry.payload {
                 EntryPayload::Blank => {}
-                EntryPayload::Normal(frame_entry) => {
+                EntryPayload::Normal(record) => {
                     let apply = s.state_machine.apply_fn.clone();
-                    let wal_offset = frame_entry.wal_offset;
-                    let page_no = frame_entry.page_no;
-                    let data = frame_entry.data.clone();
+                    let record = record.clone();
                     drop(s);
-                    if let Err(e) = apply(wal_offset, page_no, &data) {
+                    if let Err(e) = apply(record.clone()) {
                         if debug() {
                             eprintln!(
-                                "slqevfs: state machine apply error (offset={wal_offset}, page={page_no}): {e}"
+                                "slqevfs: state machine apply error (offset={}): {e}",
+                                record.wal_offset()
                             );
                         }
                         return Err(StorageError::IO {
