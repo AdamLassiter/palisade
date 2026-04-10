@@ -72,6 +72,9 @@ unsafe impl Sync for EvfsGlobal {}
 
 const WAL_HEADER_SIZE: i64 = 32;
 const WAL_FRAME_HEADER_SIZE: usize = 24;
+// SQLite reserves shm lock slots 0..=2 for WAL writer/checkpoint/recovery
+// coordination. Followers must not acquire any of these writer-oriented locks.
+const FOLLOWER_WRITER_LOCK_MAX_OFFSET: c_int = 3;
 
 // -- Page offset helpers ---------------------------------------------
 
@@ -83,6 +86,18 @@ fn page_no_for_offset(i_ofst: i64, page_size: i64) -> u32 {
 #[inline]
 fn page_start_offset(page_no: u32, page_size: i64) -> i64 {
     (page_no as i64 - 1) * page_size
+}
+
+#[inline]
+fn follower_may_write(raft: Option<&Arc<RaftHandle>>) -> bool {
+    raft.is_none_or(|r| r.is_leader())
+}
+
+#[inline]
+fn is_writer_shm_lock(offset: c_int, flags: c_int) -> bool {
+    let is_lock = (flags & SQLITE_SHM_LOCK) != 0;
+    let is_exclusive = (flags & SQLITE_SHM_EXCLUSIVE) != 0;
+    is_lock && is_exclusive && offset < FOLLOWER_WRITER_LOCK_MAX_OFFSET
 }
 
 // -- Inner file helpers ----------------------------------------------
@@ -217,12 +232,20 @@ unsafe fn wal_read_encrypted(
 unsafe fn wal_write_encrypted(
     inner: *mut sqlite3_file,
     cryptor: &PageCryptor,
+    raft: Option<&Arc<RaftHandle>>,
     mut wal_state: Option<&mut WalFileState>,
     buf: *const c_void,
     i_amt: c_int,
     i_ofst: i64,
 ) -> c_int {
     unsafe {
+        if !follower_may_write(raft) {
+            if debug() {
+                eprintln!("sqlevfs: wal_write_encrypted: refusing follower WAL write");
+            }
+            return SQLITE_READONLY;
+        }
+
         let inp = std::slice::from_raw_parts(buf as *const u8, i_amt as usize);
         let start = i_ofst;
         let end = i_ofst.checked_add(i_amt as i64).unwrap_or(i64::MAX);
@@ -629,7 +652,10 @@ unsafe extern "C" fn evfs_write(
 
         if (*efile).wal_encrypt_enabled {
             let wal_state = (*(*efile).wal_state).as_mut();
-            return wal_write_encrypted(inner, cryptor, wal_state, buf, i_amt, i_ofst);
+            let raft = (*(*efile).raft_handle).as_ref();
+            // Followers may replay replicated WAL records, but they must never
+            // generate fresh local WAL content through the SQLite write path.
+            return wal_write_encrypted(inner, cryptor, raft, wal_state, buf, i_amt, i_ofst);
         }
 
         let page_size = cryptor.page_size as i64;
@@ -973,6 +999,17 @@ unsafe extern "C" fn evfs_shm_lock(
     unsafe {
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
+        if is_writer_shm_lock(offset, flags)
+            && let Some(ref raft) = *(*efile).raft_handle
+            && !raft.is_leader()
+        {
+            // In WAL mode, shared-memory locks are the primary writer gate.
+            // Reject them on followers before SQLite can emit a local WAL frame.
+            eprintln!(
+                "sqlevfs: evfs_shm_lock: refusing WAL writer lock on follower offset={offset} n={n} flags={flags:#x}"
+            );
+            return SQLITE_BUSY;
+        }
         match (*(*inner).pMethods).xShmLock {
             Some(f) => f(inner, offset, n, flags),
             None => SQLITE_IOERR,
@@ -1278,5 +1315,30 @@ mod tests {
         assert!(methods.xSync.is_some());
         assert!(methods.xClose.is_some());
         assert!(methods.xLock.is_some());
+    }
+
+    #[test]
+    fn writer_shm_lock_detection_targets_wal_writer_slots() {
+        assert!(is_writer_shm_lock(
+            0,
+            SQLITE_SHM_LOCK | SQLITE_SHM_EXCLUSIVE
+        ));
+        assert!(is_writer_shm_lock(
+            1,
+            SQLITE_SHM_LOCK | SQLITE_SHM_EXCLUSIVE
+        ));
+        assert!(is_writer_shm_lock(
+            2,
+            SQLITE_SHM_LOCK | SQLITE_SHM_EXCLUSIVE
+        ));
+        assert!(!is_writer_shm_lock(
+            3,
+            SQLITE_SHM_LOCK | SQLITE_SHM_EXCLUSIVE
+        ));
+        assert!(!is_writer_shm_lock(0, SQLITE_SHM_LOCK | SQLITE_SHM_SHARED));
+        assert!(!is_writer_shm_lock(
+            0,
+            SQLITE_SHM_UNLOCK | SQLITE_SHM_EXCLUSIVE
+        ));
     }
 }

@@ -82,6 +82,14 @@ Common combinations:
 
 ## Quickstart
 
+To run the test harness application:
+
 ```sh
-./test
+./run-lazytest
+```
+
+To run a distributed replicated cluster harness:
+
+```sh
+./run-loadtest
 ```

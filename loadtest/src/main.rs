@@ -259,7 +259,7 @@ struct RaftNodeStatus {
     voters: Vec<u64>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Aggregate {
     account_count: i64,
     transfer_count: i64,
@@ -1220,19 +1220,39 @@ fn validate_cluster(cfg: &Config, runtime: &Runtime, leader_actual: Aggregate) -
     wait_for_replica_match(cfg, runtime, leader_actual)?;
 
     for follower in &runtime.followers {
-        let before = collect_aggregate(&open_cluster_replica_conn(cfg, runtime, follower, true)?, cfg.engine)?;
-        let follower_conn = open_cluster_replica_raft_conn(follower)?;
-        let _ = follower_conn.execute_batch(&format!(
-            "BEGIN IMMEDIATE;
-             UPDATE {} SET balance = balance + 1 WHERE id = 1;
-             COMMIT;",
-            table_name(cfg.engine, "accounts", ReadSurface::Physical)
-        ));
-        let after = collect_aggregate(&open_cluster_replica_conn(cfg, runtime, follower, true)?, cfg.engine)?;
+        let before = collect_aggregate(
+            &open_cluster_replica_conn(cfg, runtime, follower, true)?,
+            cfg.engine,
+        )?;
+        let write_err = probe_follower_write_rejection(cfg, follower)?;
+        println!(
+            "validation: follower {} rejected write probe: {}",
+            follower.node_id, write_err
+        );
+        let wal_residue = follower_wal_residue_size(follower)?;
+        println!(
+            "validation: follower {} local wal residue {} bytes",
+            follower.node_id, wal_residue
+        );
+        let after = collect_aggregate(
+            &open_cluster_replica_conn(cfg, runtime, follower, true)?,
+            cfg.engine,
+        )?;
         if !same_aggregate(before, after) {
+            println!(
+                "validation: follower {} aggregate changed before={:?} after={:?}",
+                follower.node_id, before, after
+            );
             return Err(format!(
                 "follower {} unexpectedly changed state after a write attempt",
                 follower.node_id
+            )
+            .into());
+        }
+        if wal_residue != 0 {
+            return Err(format!(
+                "follower {} left local WAL residue after rejected write: {} bytes",
+                follower.node_id, wal_residue
             )
             .into());
         }
@@ -1514,6 +1534,51 @@ fn open_cluster_replica_raft_conn(follower: &NodeInfo) -> AppResult<Connection> 
     )?;
     conn.busy_timeout(Duration::from_millis(750))?;
     Ok(conn)
+}
+
+fn probe_follower_write_rejection(cfg: &Config, follower: &NodeInfo) -> AppResult<String> {
+    let conn = open_cluster_replica_raft_conn(follower)?;
+    let table = table_name(cfg.engine, "accounts", ReadSurface::Physical);
+
+    // Probe through the follower's Raft VFS so we exercise the actual writer
+    // rejection path. Passive validation stays on plain evfs because follower
+    // state is materialized as ordinary encrypted DB/WAL files on disk.
+    match conn.execute_batch("BEGIN IMMEDIATE;") {
+        Ok(()) => {
+            let write_result = conn.execute(
+                &format!("UPDATE {table} SET balance = balance + 1 WHERE id = 1"),
+                [],
+            );
+            let commit_result = match write_result {
+                Ok(_) => conn.execute_batch("COMMIT;"),
+                Err(_) => conn.execute_batch("ROLLBACK;"),
+            };
+            let _ = conn.execute_batch("ROLLBACK;");
+
+            match (write_result, commit_result) {
+                (Err(err), _) => Ok(err.to_string()),
+                (Ok(_), Err(err)) => Ok(err.to_string()),
+                (Ok(_), Ok(())) => Err(format!(
+                    "follower {} unexpectedly committed write probe",
+                    follower.node_id
+                )
+                .into()),
+            }
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Ok(err.to_string())
+        }
+    }
+}
+
+fn follower_wal_residue_size(follower: &NodeInfo) -> AppResult<u64> {
+    let wal_path = follower.db_path.with_extension("db-wal");
+    match fs::metadata(&wal_path) {
+        Ok(meta) => Ok(meta.len()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn open_evfs_control_conn(db_path: &Path, libs: &LibPaths) -> AppResult<Connection> {
