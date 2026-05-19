@@ -172,7 +172,7 @@ impl Default for Config {
             workload: WorkloadProfile::Balanced,
             duration: Duration::from_secs(60),
             workers: 8,
-            seed: 0x5EED_5EED_D15C_A11E,
+            seed: 0xDEAD_BEEF_CAFE_BABE,
             ramp: Duration::from_secs(5),
             validate_only: false,
             keep_artifacts: false,
@@ -244,7 +244,13 @@ pub(crate) struct WorkerMetrics {
     pub(crate) order_updates: u64,
     pub(crate) admin_scans: u64,
     pub(crate) refreshes: u64,
-    pub(crate) errors: u64,
+    pub(crate) point_read_busy: u64,
+    pub(crate) range_read_busy: u64,
+    pub(crate) transfer_begin_busy: u64,
+    pub(crate) transfer_busy: u64,
+    pub(crate) order_create_busy: u64,
+    pub(crate) order_update_busy: u64,
+    pub(crate) admin_scan_busy: u64,
     pub(crate) point_read_ns: u128,
     pub(crate) range_read_ns: u128,
     pub(crate) transfer_ns: u128,
@@ -267,13 +273,29 @@ impl WorkerMetrics {
         self.order_updates += other.order_updates;
         self.admin_scans += other.admin_scans;
         self.refreshes += other.refreshes;
-        self.errors += other.errors;
+        self.point_read_busy += other.point_read_busy;
+        self.range_read_busy += other.range_read_busy;
+        self.transfer_begin_busy += other.transfer_begin_busy;
+        self.transfer_busy += other.transfer_busy;
+        self.order_create_busy += other.order_create_busy;
+        self.order_update_busy += other.order_update_busy;
+        self.admin_scan_busy += other.admin_scan_busy;
         self.point_read_ns += other.point_read_ns;
         self.range_read_ns += other.range_read_ns;
         self.transfer_ns += other.transfer_ns;
         self.order_create_ns += other.order_create_ns;
         self.order_update_ns += other.order_update_ns;
         self.admin_scan_ns += other.admin_scan_ns;
+    }
+
+    pub(crate) fn lock_conflicts(&self) -> u64 {
+        self.point_read_busy
+            + self.range_read_busy
+            + self.transfer_begin_busy
+            + self.transfer_busy
+            + self.order_create_busy
+            + self.order_update_busy
+            + self.admin_scan_busy
     }
 }
 
@@ -355,12 +377,82 @@ pub(crate) struct RaftNodeStatus {
     pub(crate) voters: Vec<u64>,
     #[serde(default)]
     pub(crate) replay: RaftReplayStatus,
+    #[serde(default)]
+    pub(crate) submit: RaftSubmitStatus,
 }
 
 #[derive(Default, Deserialize)]
 pub(crate) struct RaftReplayStatus {
     #[serde(default)]
+    pub(crate) applied_batches: u64,
+    #[serde(default)]
+    pub(crate) applied_records: u64,
+    #[serde(default)]
+    pub(crate) applied_frames: u64,
+    #[serde(default)]
+    pub(crate) last_apply_micros: u64,
+    #[serde(default)]
+    pub(crate) last_batch_records: u64,
+    #[serde(default)]
+    pub(crate) wal_syncs: u64,
+    #[serde(default)]
+    pub(crate) db_syncs: u64,
+    #[serde(default)]
+    pub(crate) wal_write_micros: u64,
+    #[serde(default)]
+    pub(crate) db_write_micros: u64,
+    #[serde(default)]
+    pub(crate) wal_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) db_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) shm_invalidate_micros: u64,
+    #[serde(default)]
+    pub(crate) last_wal_write_micros: u64,
+    #[serde(default)]
+    pub(crate) last_db_write_micros: u64,
+    #[serde(default)]
+    pub(crate) last_wal_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) last_db_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) last_shm_invalidate_micros: u64,
+    #[serde(default)]
     pub(crate) last_applied_offset: i64,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct RaftSubmitStatus {
+    #[serde(default)]
+    pub(crate) xsync_calls: u64,
+    #[serde(default)]
+    pub(crate) xsync_micros: u64,
+    #[serde(default)]
+    pub(crate) xsync_inner_micros: u64,
+    #[serde(default)]
+    pub(crate) xsync_drain_micros: u64,
+    #[serde(default)]
+    pub(crate) submit_syncs: u64,
+    #[serde(default)]
+    pub(crate) submit_records: u64,
+    #[serde(default)]
+    pub(crate) submit_frames: u64,
+    #[serde(default)]
+    pub(crate) submit_micros: u64,
+    #[serde(default)]
+    pub(crate) max_submit_micros: u64,
+    #[serde(default)]
+    pub(crate) last_xsync_micros: u64,
+    #[serde(default)]
+    pub(crate) last_xsync_inner_micros: u64,
+    #[serde(default)]
+    pub(crate) last_xsync_drain_micros: u64,
+    #[serde(default)]
+    pub(crate) last_submit_records: u64,
+    #[serde(default)]
+    pub(crate) last_submit_frames: u64,
+    #[serde(default)]
+    pub(crate) last_submit_micros: u64,
 }
 
 #[derive(Clone, Copy, Debug)]

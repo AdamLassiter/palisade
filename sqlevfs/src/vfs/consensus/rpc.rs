@@ -18,7 +18,7 @@ use crate::vfs::consensus::{
         self,
         raft_service_server::{RaftService, RaftServiceServer},
     },
-    wal::WalRecord,
+    wal::{WalBatch, WalRecord},
 };
 
 const TAG_BLANK: i64 = i64::MIN;
@@ -71,45 +71,61 @@ impl RaftService for RaftGrpcService {
     ) -> Result<Response<proto::AppendEntriesResponse>, Status> {
         let req = request.into_inner();
 
-        let entries = req
-            .entries
-            .into_iter()
-            .map(|e| {
-                let record = e
-                    .record
-                    .ok_or_else(|| Status::invalid_argument("append_entries: missing record"))?;
+        let entries =
+            req.entries
+                .into_iter()
+                .map(|e| {
+                    let first_record = e.records.first().ok_or_else(|| {
+                        Status::invalid_argument("append_entries: missing records")
+                    })?;
 
-                let payload = if record.kind == 2
-                    || (record.wal_offset == TAG_BLANK && record.page_no == 0)
-                {
-                    EntryPayload::Blank
-                } else if record.kind == 3
-                    || (record.wal_offset == TAG_MEMBERSHIP && record.page_no == 0)
-                {
-                    let membership: openraft::Membership<NodeId, openraft::BasicNode> =
-                        serde_json::from_slice(&record.data).map_err(|err| {
-                            Status::invalid_argument(format!(
-                                "append_entries: invalid membership payload: {err}"
-                            ))
-                        })?;
-                    EntryPayload::Membership(membership)
-                } else if record.kind == 1 {
-                    EntryPayload::Normal(WalRecord::Header { data: record.data })
-                } else {
-                    EntryPayload::Normal(WalRecord::Frame {
-                        wal_offset: record.wal_offset,
-                        page_no: record.page_no,
-                        data: record.data,
+                    let payload = if first_record.kind == 2
+                        || (first_record.wal_offset == TAG_BLANK && first_record.page_no == 0)
+                    {
+                        EntryPayload::Blank
+                    } else if first_record.kind == 3
+                        || (first_record.wal_offset == TAG_MEMBERSHIP && first_record.page_no == 0)
+                    {
+                        let membership: openraft::Membership<NodeId, openraft::BasicNode> =
+                            serde_json::from_slice(&first_record.data).map_err(|err| {
+                                Status::invalid_argument(format!(
+                                    "append_entries: invalid membership payload: {err}"
+                                ))
+                            })?;
+                        EntryPayload::Membership(membership)
+                    } else {
+                        let records = e
+                            .records
+                            .into_iter()
+                            .map(decode_wal_record)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        EntryPayload::Normal(WalBatch::new(records))
+                    };
+
+                    Ok(Entry {
+                        log_id: LogId::new(CommittedLeaderId::new(e.term, req.leader_id), e.index),
+                        payload,
                     })
-                };
-
-                Ok(Entry {
-                    log_id: LogId::new(CommittedLeaderId::new(e.term, req.leader_id), e.index),
-                    payload,
                 })
-            })
-            .collect::<Result<Vec<_>, Box<Status>>>();
+                .collect::<Result<Vec<_>, Box<Status>>>();
         let entries = entries.map_err(|e| *e)?;
+
+        fn decode_wal_record(record: proto::WalRecord) -> Result<WalRecord, Box<Status>> {
+            if record.kind == 1 {
+                Ok(WalRecord::Header { data: record.data })
+            } else if record.kind == 0 {
+                Ok(WalRecord::Frame {
+                    wal_offset: record.wal_offset,
+                    page_no: record.page_no,
+                    data: record.data,
+                })
+            } else {
+                Err(Box::new(Status::invalid_argument(format!(
+                    "append_entries: unexpected WAL record kind {} in normal entry",
+                    record.kind
+                ))))
+            }
+        }
 
         let raft_req = AppendEntriesRequest {
             vote: Vote::new_committed(req.term, req.leader_id),

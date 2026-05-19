@@ -19,7 +19,7 @@ use crate::vfs::consensus::{
     TruncateCallback,
     network::ReplicaNetwork,
     rpc::serve_grpc,
-    wal::{WalLogStore, WalRecord, WalStateMachine, WalStorageInner},
+    wal::{WalBatch, WalLogStore, WalRecord, WalStateMachine, WalStorageInner},
 };
 
 /// Cluster handle shared by every `EvfsFile` in the same process.
@@ -34,6 +34,45 @@ pub struct RaftHandle {
     committed_wal_offset: AtomicU64,
     /// Called when the local WAL must be truncated (leader step-down).
     truncate_cb: Option<TruncateCallback>,
+    stats: RaftHandleStats,
+}
+
+#[derive(Default)]
+struct RaftHandleStats {
+    xsync_calls: AtomicU64,
+    xsync_micros: AtomicU64,
+    xsync_inner_micros: AtomicU64,
+    xsync_drain_micros: AtomicU64,
+    submit_syncs: AtomicU64,
+    submit_records: AtomicU64,
+    submit_frames: AtomicU64,
+    submit_micros: AtomicU64,
+    max_submit_micros: AtomicU64,
+    last_xsync_micros: AtomicU64,
+    last_xsync_inner_micros: AtomicU64,
+    last_xsync_drain_micros: AtomicU64,
+    last_submit_records: AtomicU64,
+    last_submit_frames: AtomicU64,
+    last_submit_micros: AtomicU64,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct RaftSubmitStats {
+    pub xsync_calls: u64,
+    pub xsync_micros: u64,
+    pub xsync_inner_micros: u64,
+    pub xsync_drain_micros: u64,
+    pub submit_syncs: u64,
+    pub submit_records: u64,
+    pub submit_frames: u64,
+    pub submit_micros: u64,
+    pub max_submit_micros: u64,
+    pub last_xsync_micros: u64,
+    pub last_xsync_inner_micros: u64,
+    pub last_xsync_drain_micros: u64,
+    pub last_submit_records: u64,
+    pub last_submit_frames: u64,
+    pub last_submit_micros: u64,
 }
 
 impl RaftHandle {
@@ -48,7 +87,7 @@ impl RaftHandle {
     pub async fn start(
         node_id: NodeId,
         peers: HashMap<NodeId, String>,
-        apply_fn: impl Fn(WalRecord) -> Result<()> + Send + Sync + 'static,
+        apply_fn: impl Fn(WalBatch) -> Result<()> + Send + Sync + 'static,
         truncate_cb: Option<TruncateCallback>,
         grpc_listen: Option<SocketAddr>,
     ) -> Result<Arc<Self>> {
@@ -98,6 +137,7 @@ impl RaftHandle {
             runtime_handle: Handle::current(),
             committed_wal_offset: AtomicU64::new(0),
             truncate_cb,
+            stats: RaftHandleStats::default(),
         });
 
         Self::spawn_leader_watchdog(handle.clone());
@@ -148,17 +188,71 @@ impl RaftHandle {
     /// Called from within `evfs_xSync` so SQLite sees the transaction
     /// as durable only after Raft durability is confirmed.
     pub async fn submit_record(&self, record: WalRecord) -> Result<()> {
-        let wal_offset = record.wal_offset();
+        self.submit_batch(WalBatch::new(vec![record])).await
+    }
 
+    pub async fn submit_batch(&self, batch: WalBatch) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let wal_offset = batch.committed_wal_offset();
+        let records = batch.len() as u64;
+        let frames = batch.frame_count() as u64;
         self.raft
-            .client_write(record)
+            .client_write(batch)
             .await
             .context("Raft client_write failed")?;
 
         self.committed_wal_offset
             .store(wal_offset as u64, Ordering::Release);
+        let micros = started.elapsed().as_micros() as u64;
+        self.stats.submit_syncs.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .submit_records
+            .fetch_add(records, Ordering::Relaxed);
+        self.stats
+            .submit_frames
+            .fetch_add(frames, Ordering::Relaxed);
+        self.stats
+            .submit_micros
+            .fetch_add(micros, Ordering::Relaxed);
+        self.stats
+            .max_submit_micros
+            .fetch_max(micros, Ordering::Relaxed);
+        self.stats
+            .last_submit_records
+            .store(records, Ordering::Relaxed);
+        self.stats
+            .last_submit_frames
+            .store(frames, Ordering::Relaxed);
+        self.stats
+            .last_submit_micros
+            .store(micros, Ordering::Relaxed);
 
         Ok(())
+    }
+
+    pub fn record_xsync_timings(&self, total_micros: u64, inner_micros: u64, drain_micros: u64) {
+        self.stats.xsync_calls.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .xsync_micros
+            .fetch_add(total_micros, Ordering::Relaxed);
+        self.stats
+            .xsync_inner_micros
+            .fetch_add(inner_micros, Ordering::Relaxed);
+        self.stats
+            .xsync_drain_micros
+            .fetch_add(drain_micros, Ordering::Relaxed);
+        self.stats
+            .last_xsync_micros
+            .store(total_micros, Ordering::Relaxed);
+        self.stats
+            .last_xsync_inner_micros
+            .store(inner_micros, Ordering::Relaxed);
+        self.stats
+            .last_xsync_drain_micros
+            .store(drain_micros, Ordering::Relaxed);
     }
 
     pub async fn submit_frame(&self, wal_offset: i64, page_no: u32, data: Vec<u8>) -> Result<()> {
@@ -195,6 +289,26 @@ impl RaftHandle {
     /// Highest WAL byte offset known committed on this node.
     pub fn committed_wal_offset(&self) -> u64 {
         self.committed_wal_offset.load(Ordering::Acquire)
+    }
+
+    pub fn submit_stats(&self) -> RaftSubmitStats {
+        RaftSubmitStats {
+            xsync_calls: self.stats.xsync_calls.load(Ordering::Relaxed),
+            xsync_micros: self.stats.xsync_micros.load(Ordering::Relaxed),
+            xsync_inner_micros: self.stats.xsync_inner_micros.load(Ordering::Relaxed),
+            xsync_drain_micros: self.stats.xsync_drain_micros.load(Ordering::Relaxed),
+            submit_syncs: self.stats.submit_syncs.load(Ordering::Relaxed),
+            submit_records: self.stats.submit_records.load(Ordering::Relaxed),
+            submit_frames: self.stats.submit_frames.load(Ordering::Relaxed),
+            submit_micros: self.stats.submit_micros.load(Ordering::Relaxed),
+            max_submit_micros: self.stats.max_submit_micros.load(Ordering::Relaxed),
+            last_xsync_micros: self.stats.last_xsync_micros.load(Ordering::Relaxed),
+            last_xsync_inner_micros: self.stats.last_xsync_inner_micros.load(Ordering::Relaxed),
+            last_xsync_drain_micros: self.stats.last_xsync_drain_micros.load(Ordering::Relaxed),
+            last_submit_records: self.stats.last_submit_records.load(Ordering::Relaxed),
+            last_submit_frames: self.stats.last_submit_frames.load(Ordering::Relaxed),
+            last_submit_micros: self.stats.last_submit_micros.load(Ordering::Relaxed),
+        }
     }
 
     /// Explicit multi-node bootstrap for initial cluster membership.

@@ -27,11 +27,11 @@ pub mod proto {
     tonic::include_proto!("sqlevfs.raft");
 }
 
-use crate::vfs::consensus::wal::WalRecord;
+use crate::vfs::consensus::wal::WalBatch;
 
 declare_raft_types!(
     pub RaftConfig:
-        D              = WalRecord,
+        D              = WalBatch,
         R              = (),
         NodeId         = u64,
         Node           = BasicNode,
@@ -53,7 +53,7 @@ pub type TruncateCallback = Box<dyn Fn(/*wal_offset_bytes:*/ i64) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use crate::vfs::consensus::wal::{WalFileState, WalRecord};
+    use crate::vfs::consensus::wal::{WalBatch, WalFileState, WalRecord};
 
     #[test]
     fn wal_state_accumulates_header_and_partial_frame_until_sync() {
@@ -127,5 +127,29 @@ mod tests {
         assert_eq!(records[1].wal_offset(), 32);
         assert_eq!(records[2].wal_offset(), 32 + frame_size as i64);
         assert_eq!(records[3].wal_offset(), 32 + frame_size as i64 * 2);
+    }
+
+    #[test]
+    fn wal_batch_preserves_order_and_committed_offset() {
+        let frame_size = 4096 + 24;
+        let records = vec![
+            WalRecord::Header { data: vec![0; 32] },
+            WalRecord::Frame {
+                wal_offset: 32,
+                page_no: 1,
+                data: vec![1; frame_size],
+            },
+            WalRecord::Frame {
+                wal_offset: 32 + frame_size as i64,
+                page_no: 2,
+                data: vec![2; frame_size],
+            },
+        ];
+        let batch = WalBatch::new(records.clone());
+
+        assert_eq!(batch.records, records);
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch.frame_count(), 2);
+        assert_eq!(batch.committed_wal_offset(), 32 + frame_size as i64);
     }
 }

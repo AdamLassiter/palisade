@@ -40,6 +40,45 @@ impl WalRecord {
             Self::Frame { wal_offset, .. } => *wal_offset,
         }
     }
+
+    pub fn is_frame(&self) -> bool {
+        matches!(self, Self::Frame { .. })
+    }
+}
+
+/// A set of WAL records drained from one SQLite xSync.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalBatch {
+    pub records: Vec<WalRecord>,
+}
+
+impl WalBatch {
+    pub fn new(records: Vec<WalRecord>) -> Self {
+        Self { records }
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.is_frame())
+            .count()
+    }
+
+    pub fn committed_wal_offset(&self) -> i64 {
+        self.records
+            .iter()
+            .map(WalRecord::wal_offset)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 // -- WAL file state (per file descriptor) ----------------------------
@@ -186,7 +225,7 @@ struct LogStoreMeta {
 
 // -- In-memory state machine ------------------------------------------
 
-type ApplyFn = Arc<dyn Fn(WalRecord) -> Result<()> + Send + Sync>;
+type ApplyFn = Arc<dyn Fn(WalBatch) -> Result<()> + Send + Sync>;
 
 /// The WAL state machine: applies committed frames to the local SQLite
 /// database by writing them directly to the WAL file via the OS.
@@ -208,7 +247,7 @@ pub struct WalStateMachine {
 }
 
 impl WalStateMachine {
-    pub fn new(apply_fn: impl Fn(WalRecord) -> Result<()> + Send + Sync + 'static) -> Self {
+    pub fn new(apply_fn: impl Fn(WalBatch) -> Result<()> + Send + Sync + 'static) -> Self {
         Self {
             last_applied: None,
             last_membership: StoredMembership::default(),
@@ -316,15 +355,15 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
 
             match &entry.payload {
                 EntryPayload::Blank => {}
-                EntryPayload::Normal(record) => {
+                EntryPayload::Normal(batch) => {
                     let apply = s.state_machine.apply_fn.clone();
-                    let record = record.clone();
+                    let batch = batch.clone();
                     drop(s);
-                    if let Err(e) = apply(record.clone()) {
+                    if let Err(e) = apply(batch.clone()) {
                         if debug() {
                             eprintln!(
                                 "slqevfs: state machine apply error (offset={}): {e}",
-                                record.wal_offset()
+                                batch.committed_wal_offset()
                             );
                         }
                         return Err(StorageError::IO {

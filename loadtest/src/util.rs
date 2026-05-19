@@ -202,6 +202,12 @@ pub(crate) fn print_metrics(
         + metrics.orders_created
         + metrics.order_updates
         + metrics.admin_scans;
+    let read_ops = metrics.point_reads + metrics.range_reads + metrics.admin_scans;
+    let write_ops = metrics.transfers_ok
+        + metrics.transfers_skipped
+        + metrics.orders_created
+        + metrics.order_updates;
+    let workload_secs = workload_elapsed.as_secs_f64().max(0.001);
 
     println!("\n{}{}Summary{}", style(BOLD), style(CYAN), style(RESET));
     println!(
@@ -216,6 +222,14 @@ pub(crate) fn print_metrics(
         style(RESET),
         workload_elapsed.as_secs_f64()
     );
+    if workload_elapsed > cfg.duration {
+        println!(
+            "  {}workload overrun{}: {:.2}s",
+            style(DIM),
+            style(RESET),
+            (workload_elapsed - cfg.duration).as_secs_f64()
+        );
+    }
     println!(
         "  {}validation time{}: {:.2}s",
         style(DIM),
@@ -235,31 +249,57 @@ pub(crate) fn print_metrics(
         "  {}ops/sec{}: {:.2}",
         style(DIM),
         style(RESET),
-        total_ops as f64 / workload_elapsed.as_secs_f64().max(0.001)
+        total_ops as f64 / workload_secs
     );
     println!(
-        "  {}reads{}: point={} range={} admin_scans={}",
+        "  {}read ops/sec{}: {:.2}",
         style(DIM),
         style(RESET),
+        read_ops as f64 / workload_secs
+    );
+    println!(
+        "  {}write ops/sec{}: {:.2}",
+        style(DIM),
+        style(RESET),
+        write_ops as f64 / workload_secs
+    );
+    println!(
+        "  {}reads{}: total={} point={} range={} admin_scans={}",
+        style(DIM),
+        style(RESET),
+        read_ops,
         metrics.point_reads,
         metrics.range_reads,
         metrics.admin_scans
     );
     println!(
-        "  {}writes{}: transfers_ok={} transfers_skipped={} orders_created={} order_updates={}",
+        "  {}writes{}: total={} transfers_ok={} transfers_skipped={} orders_created={} order_updates={}",
         style(DIM),
         style(RESET),
+        write_ops,
         metrics.transfers_ok,
         metrics.transfers_skipped,
         metrics.orders_created,
         metrics.order_updates
     );
     println!(
-        "  {}control{}: refreshes={} errors={}",
+        "  {}control{}: refreshes={}",
         style(DIM),
         style(RESET),
-        metrics.refreshes,
-        metrics.errors
+        metrics.refreshes
+    );
+    println!(
+        "  {}lock/busy conflicts{}: total={} point_read={} range_read={} transfer_begin={} transfer_body={} create_order={} order_update={} admin_scan={}",
+        style(DIM),
+        style(RESET),
+        metrics.lock_conflicts(),
+        metrics.point_read_busy,
+        metrics.range_read_busy,
+        metrics.transfer_begin_busy,
+        metrics.transfer_busy,
+        metrics.order_create_busy,
+        metrics.order_update_busy,
+        metrics.admin_scan_busy
     );
     print_latency("point read", metrics.point_reads, metrics.point_read_ns);
     print_latency("range read", metrics.range_reads, metrics.range_read_ns);
@@ -351,6 +391,9 @@ impl Spinner {
     pub(crate) fn start(label: impl Into<String>) -> Self {
         let label = label.into();
         let animated = io::stderr().is_terminal();
+        if !io::stdout().is_terminal() || !animated {
+            phase(&label);
+        }
         let done = Arc::new(AtomicBool::new(false));
         let handle = if animated {
             let done_for_thread = done.clone();
@@ -374,7 +417,6 @@ impl Spinner {
                 }
             }))
         } else {
-            phase(&label);
             None
         };
         Self {

@@ -20,7 +20,10 @@ use libsqlite3_sys::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::vfs::consensus::{NodeId, wal::WalRecord};
+use crate::vfs::consensus::{
+    NodeId,
+    wal::{WalBatch, WalRecord},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ReplayTargetConfig {
@@ -37,12 +40,27 @@ pub struct ReplayTargetConfig {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ReplayStats {
+    pub applied_batches: u64,
+    pub applied_records: u64,
     pub applied_frames: u64,
     pub applied_bytes: u64,
     pub truncations: u64,
     pub shm_invalidations: u64,
     pub replay_errors: u64,
     pub last_apply_micros: u64,
+    pub last_batch_records: u64,
+    pub wal_syncs: u64,
+    pub db_syncs: u64,
+    pub wal_write_micros: u64,
+    pub db_write_micros: u64,
+    pub wal_sync_micros: u64,
+    pub db_sync_micros: u64,
+    pub shm_invalidate_micros: u64,
+    pub last_wal_write_micros: u64,
+    pub last_db_write_micros: u64,
+    pub last_wal_sync_micros: u64,
+    pub last_db_sync_micros: u64,
+    pub last_shm_invalidate_micros: u64,
     pub last_applied_offset: i64,
 }
 
@@ -246,113 +264,162 @@ impl FollowerReplaySink {
     }
 
     pub fn apply_record(&self, record: &WalRecord) -> Result<()> {
+        self.apply_batch(&WalBatch::new(vec![record.clone()]))
+    }
+
+    pub fn apply_batch(&self, batch: &WalBatch) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
         let started = Instant::now();
         let mut st = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
 
-        match record {
-            WalRecord::Header { data } => {
-                if data.len() != 32 {
-                    st.stats.replay_errors += 1;
-                    anyhow::bail!("invalid WAL header size: got={}, expected=32", data.len());
+        let mut wal_needs_sync = false;
+        let mut db_needs_sync = false;
+        let mut batch_wal_write_micros = 0u64;
+        let mut batch_db_write_micros = 0u64;
+        let mut batch_wal_sync_micros = 0u64;
+        let mut batch_db_sync_micros = 0u64;
+
+        {
+            let mut wal = self
+                .wal_file
+                .lock()
+                .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+            let mut db = self
+                .db_file
+                .lock()
+                .map_err(|_| anyhow::anyhow!("replay DB file lock poisoned"))?;
+
+            for record in &batch.records {
+                match record {
+                    WalRecord::Header { data } => {
+                        if data.len() != 32 {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!(
+                                "invalid WAL header size: got={}, expected=32",
+                                data.len()
+                            );
+                        }
+
+                        let write_started = Instant::now();
+                        wal.truncate(0)
+                            .context("failed to truncate WAL file for new header")?;
+                        wal.write_at(0, data)
+                            .context("failed to write WAL header at offset 0")?;
+                        batch_wal_write_micros += write_started.elapsed().as_micros() as u64;
+                        wal_needs_sync = true;
+
+                        st.stats.applied_records += 1;
+                        st.stats.applied_bytes += data.len() as u64;
+                        st.stats.last_applied_offset = 0;
+                    }
+                    WalRecord::Frame {
+                        wal_offset,
+                        data: frame_data,
+                        page_no,
+                    } => {
+                        let wal_offset = *wal_offset;
+                        let expected_len = st.frame_size as usize;
+                        if frame_data.len() != expected_len {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!(
+                                "invalid WAL frame size: got={}, expected={expected_len}",
+                                frame_data.len()
+                            );
+                        }
+                        if wal_offset < 32 {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!("invalid WAL frame offset: {wal_offset}");
+                        }
+                        if (wal_offset - 32) % st.frame_size != 0 {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!(
+                                "unaligned WAL frame offset: {wal_offset} (frame_size={})",
+                                st.frame_size
+                            );
+                        }
+
+                        // Idempotent replay of already-applied offsets.
+                        if wal_offset <= st.stats.last_applied_offset {
+                            continue;
+                        }
+
+                        let expected_next = if st.stats.last_applied_offset <= 0 {
+                            32
+                        } else {
+                            st.stats.last_applied_offset + st.frame_size
+                        };
+                        if wal_offset != expected_next {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!(
+                                "out-of-order WAL replay: got offset {wal_offset}, expected {expected_next}"
+                            );
+                        }
+
+                        let wal_write_started = Instant::now();
+                        wal.write_at(wal_offset, frame_data).with_context(|| {
+                            format!("failed to write WAL frame at offset {wal_offset}")
+                        })?;
+                        batch_wal_write_micros += wal_write_started.elapsed().as_micros() as u64;
+                        wal_needs_sync = true;
+
+                        let page_offset = (*page_no as i64 - 1) * self.target.page_size as i64;
+                        let page_bytes = &frame_data[24..];
+                        let db_write_started = Instant::now();
+                        db.write_at(page_offset, page_bytes).with_context(|| {
+                            format!(
+                                "failed to materialize DB page {page_no} at offset {page_offset}"
+                            )
+                        })?;
+                        batch_db_write_micros += db_write_started.elapsed().as_micros() as u64;
+                        db_needs_sync = true;
+
+                        st.stats.last_applied_offset = wal_offset;
+                        st.stats.applied_records += 1;
+                        st.stats.applied_frames += 1;
+                        st.stats.applied_bytes += frame_data.len() as u64;
+                    }
                 }
-
-                let mut f = self
-                    .wal_file
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
-                f.truncate(0)
-                    .context("failed to truncate WAL file for new header")?;
-                f.write_at(0, data)
-                    .context("failed to write WAL header at offset 0")?;
-                f.sync()
-                    .context("failed to sync WAL replay file after header apply")?;
-
-                st.stats.applied_bytes += data.len() as u64;
-                st.stats.last_applied_offset = 0;
-                st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
-                drop(f);
-
-                self.invalidate_shm_locked(&mut st);
-                Ok(())
             }
-            WalRecord::Frame {
-                wal_offset,
-                data: frame_data,
-                page_no,
-            } => {
-                let wal_offset = *wal_offset;
-                let expected_len = st.frame_size as usize;
-                if frame_data.len() != expected_len {
-                    st.stats.replay_errors += 1;
-                    anyhow::bail!(
-                        "invalid WAL frame size: got={}, expected={expected_len}",
-                        frame_data.len()
-                    );
-                }
-                if wal_offset < 32 {
-                    st.stats.replay_errors += 1;
-                    anyhow::bail!("invalid WAL frame offset: {wal_offset}");
-                }
-                if (wal_offset - 32) % st.frame_size != 0 {
-                    st.stats.replay_errors += 1;
-                    anyhow::bail!(
-                        "unaligned WAL frame offset: {wal_offset} (frame_size={})",
-                        st.frame_size
-                    );
-                }
 
-                // Idempotent replay of already-applied offsets.
-                if wal_offset <= st.stats.last_applied_offset {
-                    return Ok(());
-                }
-
-                let expected_next = if st.stats.last_applied_offset <= 0 {
-                    32
-                } else {
-                    st.stats.last_applied_offset + st.frame_size
-                };
-                if wal_offset != expected_next {
-                    st.stats.replay_errors += 1;
-                    anyhow::bail!(
-                        "out-of-order WAL replay: got offset {wal_offset}, expected {expected_next}"
-                    );
-                }
-
-                let mut f = self
-                    .wal_file
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
-                f.write_at(wal_offset, frame_data)
-                    .with_context(|| format!("failed to write WAL frame at offset {wal_offset}"))?;
-                f.sync()
-                    .context("failed to sync WAL replay file after frame apply")?;
-                drop(f);
-
-                let page_offset = (*page_no as i64 - 1) * self.target.page_size as i64;
-                let page_bytes = &frame_data[24..];
-                let mut db = self
-                    .db_file
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("replay DB file lock poisoned"))?;
-                db.write_at(page_offset, page_bytes).with_context(|| {
-                    format!("failed to materialize DB page {page_no} at offset {page_offset}")
-                })?;
+            if wal_needs_sync {
+                let sync_started = Instant::now();
+                wal.sync()
+                    .context("failed to sync WAL replay file after batch apply")?;
+                batch_wal_sync_micros += sync_started.elapsed().as_micros() as u64;
+                st.stats.wal_syncs += 1;
+            }
+            if db_needs_sync {
+                let sync_started = Instant::now();
                 db.sync()
-                    .context("failed to sync follower DB file after frame apply")?;
-
-                st.stats.last_applied_offset = wal_offset;
-                st.stats.applied_frames += 1;
-                st.stats.applied_bytes += frame_data.len() as u64;
-                st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
-                drop(db);
-
-                self.invalidate_shm_locked(&mut st);
-                Ok(())
+                    .context("failed to sync follower DB file after batch apply")?;
+                batch_db_sync_micros += sync_started.elapsed().as_micros() as u64;
+                st.stats.db_syncs += 1;
             }
         }
+
+        st.stats.applied_batches += 1;
+        st.stats.last_batch_records = batch.len() as u64;
+        st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
+        st.stats.wal_write_micros += batch_wal_write_micros;
+        st.stats.db_write_micros += batch_db_write_micros;
+        st.stats.wal_sync_micros += batch_wal_sync_micros;
+        st.stats.db_sync_micros += batch_db_sync_micros;
+        st.stats.last_wal_write_micros = batch_wal_write_micros;
+        st.stats.last_db_write_micros = batch_db_write_micros;
+        st.stats.last_wal_sync_micros = batch_wal_sync_micros;
+        st.stats.last_db_sync_micros = batch_db_sync_micros;
+        let shm_started = Instant::now();
+        self.invalidate_shm_locked(&mut st);
+        let shm_micros = shm_started.elapsed().as_micros() as u64;
+        st.stats.shm_invalidate_micros += shm_micros;
+        st.stats.last_shm_invalidate_micros = shm_micros;
+        Ok(())
     }
 
     pub fn truncate_at(&self, wal_offset: i64) -> Result<()> {
@@ -575,6 +642,46 @@ mod tests {
         let wal = std::fs::read(tmp.path().join("follower.db-wal")).expect("read wal");
         assert_eq!(&wal[..32], &(0..32u8).collect::<Vec<_>>()[..]);
         assert_eq!(&wal[32..32 + frame.len()], &frame);
+    }
+
+    #[test]
+    fn replay_batch_syncs_once_and_updates_stats() {
+        if !sqlite_api_is_available() {
+            eprintln!("skipping replay test: sqlite extension API is unavailable");
+            return;
+        }
+        let tmp = TempDir::new().expect("tmp dir");
+        let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
+        let header = WalRecord::Header {
+            data: vec![0xAA; 32],
+        };
+        let mut frame1 = vec![0u8; 4096 + 24];
+        frame1[0..4].copy_from_slice(&1u32.to_be_bytes());
+        let mut frame2 = vec![0u8; 4096 + 24];
+        frame2[0..4].copy_from_slice(&2u32.to_be_bytes());
+
+        sink.apply_batch(&WalBatch::new(vec![
+            header,
+            WalRecord::Frame {
+                wal_offset: 32,
+                page_no: 1,
+                data: frame1,
+            },
+            WalRecord::Frame {
+                wal_offset: 32 + (4096 + 24) as i64,
+                page_no: 2,
+                data: frame2,
+            },
+        ]))
+        .expect("apply batch");
+
+        let stats = sink.stats();
+        assert_eq!(stats.applied_batches, 1);
+        assert_eq!(stats.applied_records, 3);
+        assert_eq!(stats.applied_frames, 2);
+        assert_eq!(stats.last_batch_records, 3);
+        assert_eq!(stats.wal_syncs, 1);
+        assert_eq!(stats.db_syncs, 1);
     }
 
     #[test]

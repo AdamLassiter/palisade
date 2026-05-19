@@ -181,8 +181,14 @@ pub(crate) fn run_workers(
                                         metrics.transfers_skipped += 1;
                                     }
                                 }
-                                Err(_) => {
-                                    metrics.errors += 1;
+                                Err(err) => {
+                                    let msg = err.to_string();
+                                    if is_lock_or_busy(&msg) {
+                                        metrics.transfer_begin_busy += 1;
+                                        thread::sleep(Duration::from_millis(10));
+                                    } else {
+                                        return Err(err.into());
+                                    }
                                 }
                             }
                             WorkerMetrics::add_latency(&mut metrics.transfer_ns, started);
@@ -303,7 +309,7 @@ pub(crate) fn run_workers(
                 if let Err(err) = step {
                     let msg = err.to_string();
                     if is_lock_or_busy(&msg) {
-                        metrics.errors += 1;
+                        record_busy(&mut metrics, action);
                         thread::sleep(Duration::from_millis(10));
                         continue;
                     }
@@ -331,6 +337,17 @@ enum WorkAction {
     CreateOrder,
     UpdateOrder,
     AdminScan,
+}
+
+fn record_busy(metrics: &mut WorkerMetrics, action: WorkAction) {
+    match action {
+        WorkAction::PointRead => metrics.point_read_busy += 1,
+        WorkAction::RangeRead => metrics.range_read_busy += 1,
+        WorkAction::Transfer => metrics.transfer_busy += 1,
+        WorkAction::CreateOrder => metrics.order_create_busy += 1,
+        WorkAction::UpdateOrder => metrics.order_update_busy += 1,
+        WorkAction::AdminScan => metrics.admin_scan_busy += 1,
+    }
 }
 
 impl WorkAction {

@@ -31,7 +31,7 @@ message WalRecord {
 message LogEntry {
     uint64   index = 1;
     uint64   term  = 2;
-    WalRecord record = 3;
+    repeated WalRecord records = 3;
 }
 
 message AppendEntriesRequest {

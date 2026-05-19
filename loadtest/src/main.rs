@@ -32,7 +32,6 @@ use util::{
     CYAN,
     DIM,
     GREEN,
-    RED,
     RESET,
     Spinner,
     YELLOW,
@@ -97,11 +96,7 @@ fn run_one(cfg: Config) -> AppResult<ProfileSummary> {
     let mut metrics = WorkerMetrics::default();
     let mut workload_elapsed = Duration::ZERO;
     if !cfg.validate_only {
-        let spinner = Spinner::start(format!(
-            "running {} workload for {}s",
-            cfg.workload,
-            cfg.duration.as_secs()
-        ));
+        let spinner = Spinner::start(workload_run_label(&cfg, &runtime));
         let workload_started = Instant::now();
         let run_metrics = run_workers(
             &cfg,
@@ -147,6 +142,23 @@ fn run_one(cfg: Config) -> AppResult<ProfileSummary> {
         workload_elapsed,
         validation_elapsed,
     })
+}
+
+fn workload_run_label(cfg: &Config, runtime: &types::Runtime) -> String {
+    let mut label = format!(
+        "running workload={} engine={} workers={} duration={:.2}s ramp={:.2}s seed={:#x} db={}",
+        cfg.workload,
+        cfg.engine,
+        cfg.workers,
+        cfg.duration.as_secs_f64(),
+        cfg.ramp.as_secs_f64(),
+        cfg.seed,
+        runtime.leader_db_path.display()
+    );
+    if cfg.engine.uses_cluster() {
+        label.push_str(&format!(" followers={}", runtime.followers.len()));
+    }
+    label
 }
 
 fn run_all_workloads_for_engine(cfg: &Config) -> AppResult<()> {
@@ -315,18 +327,27 @@ fn print_summary(
         "{}{}{}",
         style(DIM),
         format!(
-            "  {:<16} {:>10} {:>8} {:>8} {:>8} {:>10} {:>12}",
-            label, "ops/sec", "ops", "errors", "writes", "workload", "validation"
+            "  {:<16} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>10} {:>12}",
+            label,
+            "ops/sec",
+            "read/sec",
+            "write/sec",
+            "ops",
+            "locks",
+            "writes",
+            "workload",
+            "validation"
         ),
         style(RESET)
     );
     for summary in summaries {
         let ops = total_ops(&summary.metrics);
+        let read_ops = read_ops(&summary.metrics);
         let writes = summary.metrics.transfers_ok
             + summary.metrics.transfers_skipped
             + summary.metrics.orders_created
             + summary.metrics.order_updates;
-        let errors = summary.metrics.errors;
+        let lock_conflicts = summary.metrics.lock_conflicts();
         let label = left_cell(&label_value(summary), 16, CYAN);
         let ops_per_sec = right_cell(
             &format!(
@@ -336,11 +357,27 @@ fn print_summary(
             10,
             GREEN,
         );
+        let read_ops_per_sec = right_cell(
+            &format!(
+                "{:.2}",
+                read_ops as f64 / summary.workload_elapsed.as_secs_f64().max(0.001)
+            ),
+            10,
+            CYAN,
+        );
+        let write_ops_per_sec = right_cell(
+            &format!(
+                "{:.2}",
+                writes as f64 / summary.workload_elapsed.as_secs_f64().max(0.001)
+            ),
+            10,
+            BLUE,
+        );
         let ops = right_cell(&ops.to_string(), 8, GREEN);
-        let errors = right_cell(
-            &errors.to_string(),
+        let lock_conflicts = right_cell(
+            &lock_conflicts.to_string(),
             8,
-            if errors == 0 { GREEN } else { RED },
+            if lock_conflicts == 0 { GREEN } else { YELLOW },
         );
         let writes = right_cell(&writes.to_string(), 8, BLUE);
         let workload_elapsed = right_cell(
@@ -354,7 +391,7 @@ fn print_summary(
             YELLOW,
         );
         println!(
-            "  {label} {ops_per_sec} {ops} {errors} {writes} {workload_elapsed} {validation_elapsed}"
+            "  {label} {ops_per_sec} {read_ops_per_sec} {write_ops_per_sec} {ops} {lock_conflicts} {writes} {workload_elapsed} {validation_elapsed}"
         );
     }
 }
@@ -364,9 +401,9 @@ fn print_matrix_total(summaries: &[ProfileSummary], elapsed: Duration) {
         .iter()
         .map(|summary| total_ops(&summary.metrics))
         .sum::<u64>();
-    let errors = summaries
+    let lock_conflicts = summaries
         .iter()
-        .map(|summary| summary.metrics.errors)
+        .map(|summary| summary.metrics.lock_conflicts())
         .sum::<u64>();
     println!(
         "\n{}{}All Engines + Workloads{}",
@@ -382,7 +419,11 @@ fn print_matrix_total(summaries: &[ProfileSummary], elapsed: Duration) {
     );
     println!("  {}runs{}: {}", style(DIM), style(RESET), summaries.len());
     println!("  {}total ops{}: {total_ops}", style(DIM), style(RESET));
-    println!("  {}errors{}: {errors}", style(DIM), style(RESET));
+    println!(
+        "  {}lock/busy conflicts{}: {lock_conflicts}",
+        style(DIM),
+        style(RESET)
+    );
 }
 
 fn left_cell(value: &str, width: usize, color: &'static str) -> String {
@@ -404,13 +445,15 @@ fn right_cell_styled(value: &str, width: usize, start: &str, end: &str) -> Strin
 }
 
 fn total_ops(metrics: &WorkerMetrics) -> u64 {
-    metrics.point_reads
-        + metrics.range_reads
+    read_ops(metrics)
         + metrics.transfers_ok
         + metrics.transfers_skipped
         + metrics.orders_created
         + metrics.order_updates
-        + metrics.admin_scans
+}
+
+fn read_ops(metrics: &WorkerMetrics) -> u64 {
+    metrics.point_reads + metrics.range_reads + metrics.admin_scans
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     ptr,
     sync::Arc,
+    time::Instant,
 };
 
 use libsqlite3_sys::*;
@@ -782,11 +783,14 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
         eprintln!("sqlevfs: xSync: flags {flags:#x}");
     }
     unsafe {
+        let sync_started = Instant::now();
         let efile = file as *mut EvfsFile;
         let inner = (*efile).inner_file;
 
         // Flush to the OS first.
+        let inner_started = Instant::now();
         let rc = ((*(*inner).pMethods).xSync.unwrap())(inner, flags);
+        let inner_micros = inner_started.elapsed().as_micros() as u64;
         if rc != SQLITE_OK {
             return rc;
         }
@@ -811,25 +815,33 @@ unsafe extern "C" fn evfs_sync(file: *mut sqlite3_file, flags: c_int) -> c_int {
         // Drain any fully-formed frames remaining in the accumulator.
         // (In normal operation these were already extracted by xWrite,
         // but a partial trailing write might have left residue.)
+        let drain_started = Instant::now();
         let records = ws.drain_for_sync();
+        let drain_micros = drain_started.elapsed().as_micros() as u64;
 
-        for record in records {
+        if !records.is_empty() {
             let handle = raft.clone();
             // We are inside an unsafe extern "C" fn; spawn a blocking
             // task on the Tokio runtime that was created alongside the
             // Raft handle.
             let result = handle
                 .runtime_handle()
-                .block_on(handle.submit_record(record));
+                .block_on(handle.submit_batch(crate::vfs::consensus::wal::WalBatch::new(records)));
 
             match result {
                 Ok(()) => {}
                 Err(e) => {
-                    eprintln!("sqlevfs: Raft submit_frame failed: {e}");
+                    eprintln!("sqlevfs: Raft submit_batch failed: {e}");
                     return SQLITE_IOERR;
                 }
             }
         }
+
+        raft.record_xsync_timings(
+            sync_started.elapsed().as_micros() as u64,
+            inner_micros,
+            drain_micros,
+        );
 
         SQLITE_OK
     }

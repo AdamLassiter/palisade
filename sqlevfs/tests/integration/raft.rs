@@ -4,9 +4,27 @@ use std::{
     time::Duration,
 };
 
-use sqlevfs::vfs::consensus::{handle::RaftHandle, wal::WalRecord};
+use sqlevfs::vfs::consensus::{
+    handle::RaftHandle,
+    wal::{WalBatch, WalRecord},
+};
 
 use crate::common::{sqlite_api_is_available, wait_until};
+
+fn frames_from_batch(batch: WalBatch) -> impl Iterator<Item = (i64, u32, Vec<u8>)> {
+    batch.records.into_iter().filter_map(|record| {
+        if let WalRecord::Frame {
+            wal_offset,
+            page_no,
+            data,
+        } = record
+        {
+            Some((wal_offset, page_no, data))
+        } else {
+            None
+        }
+    })
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_raft_replication_single_node_applies_committed_frame() -> anyhow::Result<()> {
@@ -16,13 +34,8 @@ async fn test_raft_replication_single_node_applies_committed_frame() -> anyhow::
     let node = RaftHandle::start(
         1,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                wal_offset,
-                page_no,
-                data,
-            } = record
-            {
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
                 applied_clone
                     .lock()
                     .expect("apply lock poisoned")
@@ -64,13 +77,8 @@ async fn test_raft_replication_single_node_commits_in_order() -> anyhow::Result<
     let node = RaftHandle::start(
         1,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                wal_offset,
-                page_no,
-                data,
-            } = record
-            {
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
                 applied_clone
                     .lock()
                     .expect("apply lock poisoned")
@@ -115,13 +123,8 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
     let replica = RaftHandle::start(
         2,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                wal_offset,
-                page_no,
-                data,
-            } = record
-            {
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
                 replica_applied_clone
                     .lock()
                     .expect("replica apply lock poisoned")
@@ -150,13 +153,8 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
     let source = RaftHandle::start(
         1,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                wal_offset,
-                page_no,
-                data,
-            } = record
-            {
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
                 tx.send((wal_offset, page_no, data))
                     .expect("bridge channel send should succeed");
             }
@@ -218,11 +216,8 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
     let replica_raft = RaftHandle::start(
         22,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                data: frame_data, ..
-            } = record
-            {
+        move |batch| {
+            for (_, _, frame_data) in frames_from_batch(batch) {
                 let sql = std::str::from_utf8(&frame_data)
                     .map_err(|e| anyhow::anyhow!("invalid replicated SQL payload: {e}"))?;
                 let conn = Connection::open(&replica_db_for_apply)?;
@@ -250,13 +245,8 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
     let source_raft = RaftHandle::start(
         11,
         HashMap::new(),
-        move |record| {
-            if let WalRecord::Frame {
-                wal_offset,
-                page_no,
-                data,
-            } = record
-            {
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
                 tx.send((wal_offset, page_no, data))
                     .map_err(|e| anyhow::anyhow!("failed to queue frame for replica: {e}"))?;
             }

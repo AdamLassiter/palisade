@@ -122,13 +122,13 @@ impl RaftManager {
             RaftHandle::start(
                 cfg.node_id,
                 peers,
-                move |record| {
+                move |batch| {
                     if skip_local_replay {
                         return Ok(());
                     }
                     sink_for_apply
-                        .apply_record(&record)
-                        .context("follower replay apply_record failed")
+                        .apply_batch(&batch)
+                        .context("follower replay apply_batch failed")
                 },
                 Some(Box::new(move |offset| {
                     sink_for_truncate
@@ -219,6 +219,7 @@ impl RaftManager {
             voters: Vec<NodeId>,
             peers: HashMap<NodeId, String>,
             replay: ReplayStats,
+            submit: crate::vfs::consensus::handle::RaftSubmitStats,
         }
 
         #[derive(Serialize)]
@@ -248,6 +249,7 @@ impl RaftManager {
                 )
                 .map(|s| s.stats())
                 .unwrap_or_default(),
+                submit: managed.raft.submit_stats(),
             });
         }
 

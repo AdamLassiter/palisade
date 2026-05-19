@@ -172,6 +172,7 @@ fn validate_cluster(
         "raft replicas converged in {:.2}s",
         convergence_elapsed.as_secs_f64()
     ));
+    report_raft_stats(runtime, report)?;
 
     for follower in &runtime.followers {
         let before = collect_aggregate(&open_cluster_replica_conn(follower)?, cfg.engine)?;
@@ -207,6 +208,86 @@ fn validate_cluster(
     }
 
     Ok(())
+}
+
+fn report_raft_stats(runtime: &Runtime, report: &mut ValidationReport) -> AppResult<()> {
+    let status_conn = open_evfs_control_conn(&runtime.leader_db_path, &runtime.libs)?;
+    let status = read_raft_status(&status_conn)?;
+    let leader_raft_vfs = runtime
+        .leader_raft_vfs_name
+        .as_deref()
+        .ok_or("missing leader raft vfs for cluster validation")?;
+    if let Some(leader) = status
+        .nodes
+        .iter()
+        .find(|node| node.raft_vfs_name == leader_raft_vfs)
+    {
+        report.ok(format!(
+            "raft submit syncs={} records={} frames={} avg_submit={:.3}ms max_submit={:.3}ms last_records={} last_frames={} last_submit={:.3}ms",
+            leader.submit.submit_syncs,
+            leader.submit.submit_records,
+            leader.submit.submit_frames,
+            avg_ms(leader.submit.submit_micros, leader.submit.submit_syncs),
+            leader.submit.max_submit_micros as f64 / 1000.0,
+            leader.submit.last_submit_records,
+            leader.submit.last_submit_frames,
+            leader.submit.last_submit_micros as f64 / 1000.0
+        ));
+        report.ok(format!(
+            "raft leader xSync calls={} avg_total={:.3}ms avg_inner_sync={:.3}ms avg_drain={:.3}ms last_total={:.3}ms last_inner_sync={:.3}ms last_drain={:.3}ms",
+            leader.submit.xsync_calls,
+            avg_ms(leader.submit.xsync_micros, leader.submit.xsync_calls),
+            avg_ms(leader.submit.xsync_inner_micros, leader.submit.xsync_calls),
+            avg_ms(leader.submit.xsync_drain_micros, leader.submit.xsync_calls),
+            leader.submit.last_xsync_micros as f64 / 1000.0,
+            leader.submit.last_xsync_inner_micros as f64 / 1000.0,
+            leader.submit.last_xsync_drain_micros as f64 / 1000.0
+        ));
+    }
+
+    for follower in &runtime.followers {
+        if let Some(node) = status
+            .nodes
+            .iter()
+            .find(|node| node.raft_vfs_name == follower.raft_vfs_name)
+        {
+            report.ok(format!(
+                "follower {} replay batches={} records={} frames={} wal_syncs={} db_syncs={} last_batch_records={} last_apply={:.3}ms",
+                follower.node_id,
+                node.replay.applied_batches,
+                node.replay.applied_records,
+                node.replay.applied_frames,
+                node.replay.wal_syncs,
+                node.replay.db_syncs,
+                node.replay.last_batch_records,
+                node.replay.last_apply_micros as f64 / 1000.0
+            ));
+            report.ok(format!(
+                "follower {} replay timing avg_wal_write={:.3}ms avg_db_write={:.3}ms avg_wal_sync={:.3}ms avg_db_sync={:.3}ms avg_shm={:.3}ms last_wal_write={:.3}ms last_db_write={:.3}ms last_wal_sync={:.3}ms last_db_sync={:.3}ms last_shm={:.3}ms",
+                follower.node_id,
+                avg_ms(node.replay.wal_write_micros, node.replay.applied_batches),
+                avg_ms(node.replay.db_write_micros, node.replay.applied_batches),
+                avg_ms(node.replay.wal_sync_micros, node.replay.wal_syncs),
+                avg_ms(node.replay.db_sync_micros, node.replay.db_syncs),
+                avg_ms(node.replay.shm_invalidate_micros, node.replay.applied_batches),
+                node.replay.last_wal_write_micros as f64 / 1000.0,
+                node.replay.last_db_write_micros as f64 / 1000.0,
+                node.replay.last_wal_sync_micros as f64 / 1000.0,
+                node.replay.last_db_sync_micros as f64 / 1000.0,
+                node.replay.last_shm_invalidate_micros as f64 / 1000.0
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn avg_ms(total_micros: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        total_micros as f64 / count as f64 / 1000.0
+    }
 }
 
 fn wait_for_replica_match(

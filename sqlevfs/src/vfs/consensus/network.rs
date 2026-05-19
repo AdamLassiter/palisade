@@ -121,37 +121,20 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
         let mut entries = Vec::with_capacity(req.entries.len());
         for e in req.entries {
             match e.payload {
-                EntryPayload::Normal(record) => entries.push(proto::LogEntry {
+                EntryPayload::Normal(batch) => entries.push(proto::LogEntry {
                     index: e.log_id.index,
                     term: e.log_id.leader_id.term,
-                    record: Some(match record {
-                        WalRecord::Header { data } => proto::WalRecord {
-                            kind: 1,
-                            wal_offset: 0,
-                            data,
-                            page_no: 0,
-                        },
-                        WalRecord::Frame {
-                            wal_offset,
-                            data,
-                            page_no,
-                        } => proto::WalRecord {
-                            kind: 0,
-                            wal_offset,
-                            data,
-                            page_no,
-                        },
-                    }),
+                    records: batch.records.into_iter().map(encode_wal_record).collect(),
                 }),
                 EntryPayload::Blank => entries.push(proto::LogEntry {
                     index: e.log_id.index,
                     term: e.log_id.leader_id.term,
-                    record: Some(proto::WalRecord {
+                    records: vec![proto::WalRecord {
                         kind: 2,
                         wal_offset: TAG_BLANK,
                         data: Vec::new(),
                         page_no: 0,
-                    }),
+                    }],
                 }),
                 EntryPayload::Membership(membership) => {
                     let encoded = serde_json::to_vec(&membership).map_err(|err| {
@@ -164,14 +147,35 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
                     entries.push(proto::LogEntry {
                         index: e.log_id.index,
                         term: e.log_id.leader_id.term,
-                        record: Some(proto::WalRecord {
+                        records: vec![proto::WalRecord {
                             kind: 3,
                             wal_offset: TAG_MEMBERSHIP,
                             data: encoded,
                             page_no: 0,
-                        }),
+                        }],
                     });
                 }
+            }
+        }
+
+        fn encode_wal_record(record: WalRecord) -> proto::WalRecord {
+            match record {
+                WalRecord::Header { data } => proto::WalRecord {
+                    kind: 1,
+                    wal_offset: 0,
+                    data,
+                    page_no: 0,
+                },
+                WalRecord::Frame {
+                    wal_offset,
+                    data,
+                    page_no,
+                } => proto::WalRecord {
+                    kind: 0,
+                    wal_offset,
+                    data,
+                    page_no,
+                },
             }
         }
 
