@@ -62,6 +62,20 @@ It helps you:
 
 ---
 
+### 5) `loadtest` — Application-Shaped Benchmark & Validation Harness
+
+`loadtest` is a longer-running benchmark harness for exercising the stack under concurrent, application-shaped workloads. It can run plain SQLite, secured/encrypted SQLite, or a local 3-node Raft cluster and then validate the resulting database state.
+
+It reports:
+
+- total, read, and write throughput
+- per-operation counts and average latencies
+- lock/busy conflict counts split by operation type
+- workload overrun when slow in-flight operations finish after the target duration
+- validation timing and, for cluster runs, Raft replay/materialization/WAL-sync metrics
+
+---
+
 ## How they fit together
 
 Common combinations:
@@ -70,6 +84,7 @@ Common combinations:
 - **Query rewriting + in-DB access control**: `sqlshim` can enforce “mandatory predicates” or block statements; `sqlsec` remains the source of truth for visibility/update rules.
 - **All three**: `sqlshim` shapes incoming SQL, `sqlsec` enforces label-based policy, `sqlevfs` encrypts pages on disk.
 - Use **`lazytest`** as the harness to run these stacks under `LD_PRELOAD`.
+- Use **`loadtest`** to compare throughput, contention behavior, validation correctness, and clustered Raft replication metrics across engines and workloads.
 
 ## Combined usage (conceptual)
 
@@ -93,3 +108,73 @@ To run a distributed replicated cluster harness:
 ```sh
 ./run-loadtest
 ```
+
+## Loadtest
+
+The top-level `run-loadtest` script builds the workspace, creates a temporary EVFS key, sets up the `sqlshim` preload for secured engines, and runs `loadtest`.
+
+```sh
+./run-loadtest --release --engine cluster --workload transfer-heavy --duration-secs 10 --workers 8
+```
+
+Defaults are debug mode, `engine=cluster`, `workload=balanced`, `duration=60s`, `workers=8`, and a fixed seed.
+
+### Engines
+
+- `sqlite`: plain SQLite through `rusqlite`
+- `secure`: SQLite + `sqlsec` + `sqlevfs`
+- `cluster`: SQLite + `sqlsec` + `sqlevfs` Raft in a local 3-node topology
+- `all`: run `sqlite`, `secure`, and `cluster`
+
+`baseline` is accepted as a deprecated alias for `sqlite`.
+
+### Workloads
+
+- `balanced`: mixed reads, writes, transfers, and admin scans
+- `read-heavy`: tenant point/range reads with light writes
+- `write-heavy`: order creation/update pressure
+- `transfer-heavy`: multi-row transfer transactions
+- `scan-heavy`: admin aggregate scans
+- `contention`: hot-tenant writes and transfers
+- `all`: run every workload profile
+
+Examples:
+
+```sh
+./run-loadtest --release --engine all --workload transfer-heavy --duration-secs 10 --workers 8
+./run-loadtest --release --engine cluster --workload all --duration-secs 5 --workers 4
+./run-loadtest --release --engine all --workload all --output workloads --duration-secs 5 --workers 4
+./run-loadtest --release --engine all --workload all --output engines --duration-secs 5 --workers 4
+```
+
+When `--engine all` is used with one workload, the roll-up is grouped by engine. When `--workload all` is used with one engine, the roll-up is grouped by workload. When both are `all`, `--output workloads` groups workloads under each engine and `--output engines` groups engines under each workload; the default is `workloads`.
+
+### Validation and Metrics
+
+Each run seeds a database, executes the selected workload unless `--validate-only` is set, and validates:
+
+- account-balance conservation and non-negative balances
+- transfer, order, and audit row counts
+- expected order terminal states
+- `sqlsec` visibility for user/admin/ops contexts
+- encrypted-file plaintext leakage checks for EVFS-backed modes
+- cluster leader/follower convergence and follower write rejection
+
+For cluster runs, validation waits for follower Raft replay and materialized follower DB state to catch up before comparing aggregates. The output includes leader submit timing, replay apply timing, follower WAL sync timing, materialization timing, queue depth, and replay offsets.
+
+### Useful Flags
+
+- `--debug` / `--release`: select build profile
+- `--duration-secs N`: target workload duration
+- `--workers N`: concurrent worker count
+- `--seed N`: deterministic seed
+- `--ramp-secs N`: worker ramp-up duration
+- `--validate-only`: seed and validate without running the workload
+- `--keep-artifacts`: keep the temporary workspace for inspection
+- `--cluster-follower-wal-sync per-batch|coalesced`: choose follower WAL sync policy for cluster runs
+- `--cluster-follower-wal-sync-batches N`: coalesced sync batch threshold, default `64`
+- `--cluster-follower-wal-sync-ms N`: coalesced sync delay threshold, default `5`
+
+The default cluster follower WAL sync policy is `per-batch`, which syncs follower WAL once per applied Raft batch. `coalesced` is an explicit benchmark/performance mode that writes follower WAL immediately but syncs it after the configured batch or delay threshold; this can improve write-heavy clustered benchmarks while weakening follower crash durability inside the sync window.
+
+More detail lives in [`loadtest/README.md`](loadtest/README.md).

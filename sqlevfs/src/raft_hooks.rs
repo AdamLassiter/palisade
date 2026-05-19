@@ -48,7 +48,7 @@ use crate::{
         consensus::{
             NodeId,
             handle::RaftHandle,
-            replay::{self, ReplayStats, ReplayTargetConfig},
+            replay::{self, FollowerWalSyncConfig, ReplayStats, ReplayTargetConfig},
         },
         register_evfs,
     },
@@ -68,6 +68,12 @@ struct RaftSqlConfig {
     page_size: u32,
     reserve_size: usize,
     replay_target: ReplayTargetConfig,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct RaftInitOptions {
+    #[serde(default)]
+    follower_wal_sync: FollowerWalSyncConfig,
 }
 
 struct ManagedRaft {
@@ -373,6 +379,7 @@ fn derive_replay_target(
         shm_path: format!("{db}-shm"),
         db_path: db,
         page_size,
+        follower_wal_sync: FollowerWalSyncConfig::default(),
     })
 }
 
@@ -640,11 +647,11 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
     argv: *mut *mut sqlite3_value,
 ) {
     unsafe {
-        if !(3..=5).contains(&argc) {
+        if !(3..=6).contains(&argc) {
             sqlite_error(
                 ctx,
                 "evfs_raft_init",
-                "expected 3-5 arguments: node_id, listen_addr, peers_json[, vfs_name[, raft_vfs_name]]",
+                "expected 3-6 arguments: node_id, listen_addr, peers_json[, vfs_name[, raft_vfs_name[, options_json]]]",
             );
             return;
         }
@@ -679,8 +686,15 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
             } else {
                 DEFAULT_RAFT_VFS_NAME.to_string()
             };
+            let options = if argc >= 6 {
+                let json = get_optional_text(argv, 5, "{}")?;
+                serde_json::from_str::<RaftInitOptions>(&json)
+                    .with_context(|| format!("failed to parse raft options JSON: {json}"))?
+            } else {
+                RaftInitOptions::default()
+            };
 
-            let replay_target = {
+            let mut replay_target = {
                 let db = sqlite3_context_db_handle(ctx);
                 let db_path = main_db_path(db).ok_or_else(|| {
                     anyhow::anyhow!(
@@ -689,6 +703,7 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
                 })?;
                 derive_replay_target(&raft_vfs_name, node_id, &db_path, 4096)?
             };
+            replay_target.follower_wal_sync = options.follower_wal_sync;
 
             let cfg = RaftSqlConfig {
                 node_id,

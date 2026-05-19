@@ -1,6 +1,13 @@
 use std::time::Duration;
 
-use crate::types::{AppResult, Config, Engine, SummaryOutput, WorkloadProfile};
+use crate::types::{
+    AppResult,
+    ClusterFollowerWalSync,
+    Config,
+    Engine,
+    SummaryOutput,
+    WorkloadProfile,
+};
 
 pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
     let mut cfg = Config::default();
@@ -69,6 +76,34 @@ pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
                         .ok_or_else(|| format!("unknown output '{value}'"))?,
                 );
             }
+            "--cluster-follower-wal-sync" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or("missing value for --cluster-follower-wal-sync")?;
+                cfg.cluster_follower_wal_sync = ClusterFollowerWalSync::parse(value)
+                    .ok_or_else(|| format!("unknown cluster follower WAL sync mode '{value}'"))?;
+            }
+            "--cluster-follower-wal-sync-batches" => {
+                i += 1;
+                cfg.cluster_follower_wal_sync_batches = args
+                    .get(i)
+                    .ok_or("missing value for --cluster-follower-wal-sync-batches")?
+                    .parse()?;
+                if cfg.cluster_follower_wal_sync_batches == 0 {
+                    return Err("--cluster-follower-wal-sync-batches must be > 0".into());
+                }
+            }
+            "--cluster-follower-wal-sync-ms" => {
+                i += 1;
+                cfg.cluster_follower_wal_sync_ms = args
+                    .get(i)
+                    .ok_or("missing value for --cluster-follower-wal-sync-ms")?
+                    .parse()?;
+                if cfg.cluster_follower_wal_sync_ms == 0 {
+                    return Err("--cluster-follower-wal-sync-ms must be > 0".into());
+                }
+            }
             other => return Err(format!("unknown option '{other}'").into()),
         }
         i += 1;
@@ -92,4 +127,7 @@ fn print_help() {
     println!("  --keep-artifacts");
     println!("  --output workloads|engines");
     println!("    controls roll-up orientation when --engine all and --workload all");
+    println!("  --cluster-follower-wal-sync per-batch|coalesced");
+    println!("  --cluster-follower-wal-sync-batches N");
+    println!("  --cluster-follower-wal-sync-ms N");
 }

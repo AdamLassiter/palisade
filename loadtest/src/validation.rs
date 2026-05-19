@@ -252,29 +252,59 @@ fn report_raft_stats(runtime: &Runtime, report: &mut ValidationReport) -> AppRes
             .find(|node| node.raft_vfs_name == follower.raft_vfs_name)
         {
             report.ok(format!(
-                "follower {} replay batches={} records={} frames={} wal_syncs={} db_syncs={} last_batch_records={} last_apply={:.3}ms",
+                "follower {} replay batches={} records={} frames={} wal_sync_policy={} wal_syncs={} last_batch_records={} last_apply={:.3}ms",
                 follower.node_id,
                 node.replay.applied_batches,
                 node.replay.applied_records,
                 node.replay.applied_frames,
+                replay_wal_sync_policy(node),
                 node.replay.wal_syncs,
-                node.replay.db_syncs,
                 node.replay.last_batch_records,
                 node.replay.last_apply_micros as f64 / 1000.0
             ));
             report.ok(format!(
-                "follower {} replay timing avg_wal_write={:.3}ms avg_db_write={:.3}ms avg_wal_sync={:.3}ms avg_db_sync={:.3}ms avg_shm={:.3}ms last_wal_write={:.3}ms last_db_write={:.3}ms last_wal_sync={:.3}ms last_db_sync={:.3}ms last_shm={:.3}ms",
+                "follower {} replay apply timing avg_wal_write={:.3}ms avg_wal_sync={:.3}ms last_wal_write={:.3}ms last_wal_sync={:.3}ms last_wal_synced_offset={} pending_wal_sync_batches={} coalesced_wal_syncs={} avg_sync_batches={:.2} last_sync_batches={} avg_sync_delay={:.3}ms last_sync_delay={:.3}ms{}",
                 follower.node_id,
                 avg_ms(node.replay.wal_write_micros, node.replay.applied_batches),
-                avg_ms(node.replay.db_write_micros, node.replay.applied_batches),
                 avg_ms(node.replay.wal_sync_micros, node.replay.wal_syncs),
-                avg_ms(node.replay.db_sync_micros, node.replay.db_syncs),
-                avg_ms(node.replay.shm_invalidate_micros, node.replay.applied_batches),
                 node.replay.last_wal_write_micros as f64 / 1000.0,
-                node.replay.last_db_write_micros as f64 / 1000.0,
                 node.replay.last_wal_sync_micros as f64 / 1000.0,
-                node.replay.last_db_sync_micros as f64 / 1000.0,
-                node.replay.last_shm_invalidate_micros as f64 / 1000.0
+                node.replay.last_wal_synced_offset,
+                node.replay.pending_wal_sync_batches,
+                node.replay.coalesced_wal_syncs,
+                avg_count(node.replay.wal_sync_batches, node.replay.wal_syncs),
+                node.replay.last_wal_sync_batches,
+                avg_ms(node.replay.wal_sync_delay_micros, node.replay.wal_syncs),
+                node.replay.last_wal_sync_delay_micros as f64 / 1000.0,
+                node.replay
+                    .last_wal_sync_error
+                    .as_ref()
+                    .map(|err| format!(" last_wal_sync_error={err}"))
+                    .unwrap_or_default()
+            ));
+            report.ok(format!(
+                "follower {} materialization batches={} frames={} db_syncs={} queue_depth={} errors={} last_offset={} avg_db_write={:.3}ms avg_db_sync={:.3}ms avg_shm={:.3}ms last_db_write={:.3}ms last_db_sync={:.3}ms last_shm={:.3}ms{}",
+                follower.node_id,
+                node.replay.materialize_batches,
+                node.replay.materialize_frames,
+                node.replay.db_syncs,
+                node.replay.materialize_queue_depth,
+                node.replay.materialize_errors,
+                node.replay.last_materialized_offset,
+                avg_ms(node.replay.materialize_db_write_micros, node.replay.materialize_batches),
+                avg_ms(node.replay.materialize_db_sync_micros, node.replay.db_syncs),
+                avg_ms(
+                    node.replay.materialize_shm_invalidate_micros,
+                    node.replay.materialize_batches
+                ),
+                node.replay.last_materialize_db_write_micros as f64 / 1000.0,
+                node.replay.last_materialize_db_sync_micros as f64 / 1000.0,
+                node.replay.last_materialize_shm_invalidate_micros as f64 / 1000.0,
+                node.replay
+                    .last_materialize_error
+                    .as_ref()
+                    .map(|err| format!(" last_error={err}"))
+                    .unwrap_or_default()
             ));
         }
     }
@@ -287,6 +317,22 @@ fn avg_ms(total_micros: u64, count: u64) -> f64 {
         0.0
     } else {
         total_micros as f64 / count as f64 / 1000.0
+    }
+}
+
+fn avg_count(total: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        total as f64 / count as f64
+    }
+}
+
+fn replay_wal_sync_policy(node: &crate::types::RaftNodeStatus) -> &str {
+    if node.replay.wal_sync_policy.is_empty() {
+        "per-batch"
+    } else {
+        &node.replay.wal_sync_policy
     }
 }
 
@@ -313,7 +359,11 @@ fn wait_for_replica_match(
         let status = read_raft_status(&status_conn)?;
         let last_status = replay_status_summary(&status, leader_raft_vfs, &follower_vfs_names);
 
-        if replicas_replayed_to_leader(&status, leader_raft_vfs, &follower_vfs_names)? {
+        if replicas_replayed_and_materialized_to_leader(
+            &status,
+            leader_raft_vfs,
+            &follower_vfs_names,
+        )? {
             let mut all_match = true;
             for follower in &runtime.followers {
                 match collect_aggregate(&open_cluster_replica_conn(follower)?, cfg.engine) {
@@ -354,7 +404,7 @@ fn read_raft_status(conn: &Connection) -> AppResult<RaftStatusDoc> {
     Ok(serde_json::from_str(&status)?)
 }
 
-fn replicas_replayed_to_leader(
+fn replicas_replayed_and_materialized_to_leader(
     status: &RaftStatusDoc,
     leader_raft_vfs: &str,
     follower_vfs_names: &[&str],
@@ -372,7 +422,26 @@ fn replicas_replayed_to_leader(
             .iter()
             .find(|node| node.raft_vfs_name == *follower_vfs)
             .ok_or_else(|| format!("raft status missing follower vfs {follower_vfs}"))?;
+        if follower.replay.materialize_errors != 0 {
+            return Err(format!(
+                "follower {follower_vfs} materialization failed: {}",
+                follower
+                    .replay
+                    .last_materialize_error
+                    .as_deref()
+                    .unwrap_or("unknown materialization error")
+            )
+            .into());
+        }
         if follower.replay.last_applied_offset < leader_offset {
+            return Ok(false);
+        }
+        if replay_wal_sync_policy(follower) == "per-batch"
+            && follower.replay.last_wal_synced_offset < leader_offset
+        {
+            return Ok(false);
+        }
+        if follower.replay.last_materialized_offset < leader_offset {
             return Ok(false);
         }
     }
@@ -393,16 +462,26 @@ fn replay_status_summary(
     let followers = follower_vfs_names
         .iter()
         .map(|follower_vfs| {
-            let offset = status
+            let offsets = status
                 .nodes
                 .iter()
                 .find(|node| node.raft_vfs_name == *follower_vfs)
-                .map(|node| node.replay.last_applied_offset);
-            format!("{follower_vfs}={offset:?}")
+                .map(|node| {
+                    (
+                        node.replay.last_applied_offset,
+                        node.replay.last_wal_synced_offset,
+                        node.replay.last_materialized_offset,
+                        node.replay.materialize_queue_depth,
+                        node.replay.pending_wal_sync_batches,
+                    )
+                });
+            format!("{follower_vfs}=apply/wal_synced/materialized/materialize_queue/wal_pending={offsets:?}")
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("leader {leader_raft_vfs} committed={leader_offset:?}; follower replay {followers}")
+    format!(
+        "leader {leader_raft_vfs} committed={leader_offset:?}; follower replay/materialization {followers}"
+    )
 }
 
 fn same_aggregate(a: Aggregate, b: Aggregate) -> bool {

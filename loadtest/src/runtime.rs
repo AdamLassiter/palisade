@@ -122,7 +122,7 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
     let (leader_raft_vfs_name, followers) = if cfg.engine.uses_cluster() {
         transient("building raft cluster");
         let (leader_raft_vfs_name, followers) =
-            build_cluster(&libs, &leader_db_path, &workspace_path)?;
+            build_cluster(cfg, &libs, &leader_db_path, &workspace_path)?;
         (Some(leader_raft_vfs_name), followers)
     } else {
         (None, Vec::new())
@@ -173,6 +173,7 @@ fn sync_cluster_keyrings(runtime: &Runtime) -> AppResult<()> {
 }
 
 fn build_cluster(
+    cfg: &Config,
     libs: &LibPaths,
     leader_db_path: &Path,
     workspace_path: &Path,
@@ -223,9 +224,16 @@ fn build_cluster(
     transient("opening leader control connection");
     let leader_control = open_evfs_control_conn(leader_db_path, libs)?;
     transient("starting raft node 1");
+    let raft_options_json = raft_options_json(cfg)?;
     leader_control.query_row::<String, _, _>(
-        "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4)",
-        params![1_i64, &leader_addr, "{}", &nodes[0].raft_vfs_name],
+        "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4, ?5)",
+        params![
+            1_i64,
+            &leader_addr,
+            "{}",
+            &nodes[0].raft_vfs_name,
+            &raft_options_json
+        ],
         |r| r.get(0),
     )?;
     transient("waiting for leader election");
@@ -257,12 +265,13 @@ fn build_cluster(
         ]))?;
         transient(format!("starting follower node {}", node.node_id));
         conn.query_row::<String, _, _>(
-            "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4)",
+            "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4, ?5)",
             params![
                 node.node_id as i64,
                 &node.listen_addr,
                 peers_json,
-                &node.raft_vfs_name
+                &node.raft_vfs_name,
+                &raft_options_json
             ],
             |r| r.get(0),
         )?;
@@ -293,6 +302,17 @@ fn build_cluster(
     )?;
     persist("raft cluster ready");
     Ok((leader_raft_vfs_name, nodes.into_iter().skip(1).collect()))
+}
+
+fn raft_options_json(cfg: &Config) -> AppResult<String> {
+    Ok(serde_json::json!({
+        "follower_wal_sync": {
+            "mode": cfg.cluster_follower_wal_sync.as_str(),
+            "max_batches": cfg.cluster_follower_wal_sync_batches,
+            "max_delay_ms": cfg.cluster_follower_wal_sync_ms,
+        }
+    })
+    .to_string())
 }
 
 fn raft_vfs_suffix(workspace_path: &Path) -> String {

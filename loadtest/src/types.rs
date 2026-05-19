@@ -31,6 +31,12 @@ pub(crate) enum SummaryOutput {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClusterFollowerWalSync {
+    PerBatch,
+    Coalesced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkloadProfile {
     Balanced,
     ReadHeavy,
@@ -150,6 +156,29 @@ impl SummaryOutput {
     }
 }
 
+impl ClusterFollowerWalSync {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::PerBatch => "per-batch",
+            Self::Coalesced => "coalesced",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "per-batch" | "per_batch" => Some(Self::PerBatch),
+            "coalesced" => Some(Self::Coalesced),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ClusterFollowerWalSync {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub(crate) mode: String,
@@ -162,6 +191,9 @@ pub(crate) struct Config {
     pub(crate) validate_only: bool,
     pub(crate) keep_artifacts: bool,
     pub(crate) output: Option<SummaryOutput>,
+    pub(crate) cluster_follower_wal_sync: ClusterFollowerWalSync,
+    pub(crate) cluster_follower_wal_sync_batches: usize,
+    pub(crate) cluster_follower_wal_sync_ms: u64,
 }
 
 impl Default for Config {
@@ -177,6 +209,9 @@ impl Default for Config {
             validate_only: false,
             keep_artifacts: false,
             output: None,
+            cluster_follower_wal_sync: ClusterFollowerWalSync::PerBatch,
+            cluster_follower_wal_sync_batches: 64,
+            cluster_follower_wal_sync_ms: 5,
         }
     }
 }
@@ -396,29 +431,59 @@ pub(crate) struct RaftReplayStatus {
     #[serde(default)]
     pub(crate) wal_syncs: u64,
     #[serde(default)]
+    pub(crate) wal_sync_policy: String,
+    #[serde(default)]
+    pub(crate) last_wal_sync_error: Option<String>,
+    #[serde(default)]
     pub(crate) db_syncs: u64,
     #[serde(default)]
     pub(crate) wal_write_micros: u64,
     #[serde(default)]
-    pub(crate) db_write_micros: u64,
-    #[serde(default)]
     pub(crate) wal_sync_micros: u64,
-    #[serde(default)]
-    pub(crate) db_sync_micros: u64,
-    #[serde(default)]
-    pub(crate) shm_invalidate_micros: u64,
     #[serde(default)]
     pub(crate) last_wal_write_micros: u64,
     #[serde(default)]
-    pub(crate) last_db_write_micros: u64,
-    #[serde(default)]
     pub(crate) last_wal_sync_micros: u64,
     #[serde(default)]
-    pub(crate) last_db_sync_micros: u64,
-    #[serde(default)]
-    pub(crate) last_shm_invalidate_micros: u64,
-    #[serde(default)]
     pub(crate) last_applied_offset: i64,
+    #[serde(default)]
+    pub(crate) last_wal_synced_offset: i64,
+    #[serde(default)]
+    pub(crate) pending_wal_sync_batches: u64,
+    #[serde(default)]
+    pub(crate) coalesced_wal_syncs: u64,
+    #[serde(default)]
+    pub(crate) wal_sync_batches: u64,
+    #[serde(default)]
+    pub(crate) last_wal_sync_batches: u64,
+    #[serde(default)]
+    pub(crate) wal_sync_delay_micros: u64,
+    #[serde(default)]
+    pub(crate) last_wal_sync_delay_micros: u64,
+    #[serde(default)]
+    pub(crate) last_materialized_offset: i64,
+    #[serde(default)]
+    pub(crate) materialize_batches: u64,
+    #[serde(default)]
+    pub(crate) materialize_frames: u64,
+    #[serde(default)]
+    pub(crate) materialize_queue_depth: u64,
+    #[serde(default)]
+    pub(crate) materialize_errors: u64,
+    #[serde(default)]
+    pub(crate) last_materialize_error: Option<String>,
+    #[serde(default)]
+    pub(crate) materialize_db_write_micros: u64,
+    #[serde(default)]
+    pub(crate) materialize_db_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) materialize_shm_invalidate_micros: u64,
+    #[serde(default)]
+    pub(crate) last_materialize_db_write_micros: u64,
+    #[serde(default)]
+    pub(crate) last_materialize_db_sync_micros: u64,
+    #[serde(default)]
+    pub(crate) last_materialize_shm_invalidate_micros: u64,
 }
 
 #[derive(Default, Deserialize)]

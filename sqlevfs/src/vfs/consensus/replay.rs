@@ -2,7 +2,15 @@ use std::{
     collections::HashMap,
     ffi::{CString, c_int, c_void},
     ptr,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc,
+        Condvar,
+        Mutex,
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, SyncSender},
+    },
+    thread,
     time::Instant,
 };
 
@@ -36,6 +44,49 @@ pub struct ReplayTargetConfig {
     pub wal_path: String,
     pub shm_path: String,
     pub page_size: u32,
+    #[serde(default)]
+    pub follower_wal_sync: FollowerWalSyncConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum FollowerWalSyncMode {
+    PerBatch,
+    Coalesced,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct FollowerWalSyncConfig {
+    #[serde(default)]
+    pub mode: FollowerWalSyncMode,
+    #[serde(default = "default_wal_sync_max_batches")]
+    pub max_batches: usize,
+    #[serde(default = "default_wal_sync_max_delay_ms")]
+    pub max_delay_ms: u64,
+}
+
+impl Default for FollowerWalSyncMode {
+    fn default() -> Self {
+        Self::PerBatch
+    }
+}
+
+impl Default for FollowerWalSyncConfig {
+    fn default() -> Self {
+        Self {
+            mode: FollowerWalSyncMode::PerBatch,
+            max_batches: default_wal_sync_max_batches(),
+            max_delay_ms: default_wal_sync_max_delay_ms(),
+        }
+    }
+}
+
+fn default_wal_sync_max_batches() -> usize {
+    64
+}
+
+fn default_wal_sync_max_delay_ms() -> u64 {
+    5
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -47,21 +98,38 @@ pub struct ReplayStats {
     pub truncations: u64,
     pub shm_invalidations: u64,
     pub replay_errors: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_wal_sync_error: Option<String>,
+    pub materialize_errors: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_materialize_error: Option<String>,
     pub last_apply_micros: u64,
     pub last_batch_records: u64,
     pub wal_syncs: u64,
+    pub wal_sync_policy: String,
     pub db_syncs: u64,
     pub wal_write_micros: u64,
-    pub db_write_micros: u64,
     pub wal_sync_micros: u64,
-    pub db_sync_micros: u64,
-    pub shm_invalidate_micros: u64,
     pub last_wal_write_micros: u64,
-    pub last_db_write_micros: u64,
     pub last_wal_sync_micros: u64,
-    pub last_db_sync_micros: u64,
-    pub last_shm_invalidate_micros: u64,
     pub last_applied_offset: i64,
+    pub last_wal_synced_offset: i64,
+    pub pending_wal_sync_batches: u64,
+    pub coalesced_wal_syncs: u64,
+    pub wal_sync_batches: u64,
+    pub last_wal_sync_batches: u64,
+    pub wal_sync_delay_micros: u64,
+    pub last_wal_sync_delay_micros: u64,
+    pub last_materialized_offset: i64,
+    pub materialize_batches: u64,
+    pub materialize_frames: u64,
+    pub materialize_queue_depth: u64,
+    pub materialize_db_write_micros: u64,
+    pub materialize_db_sync_micros: u64,
+    pub materialize_shm_invalidate_micros: u64,
+    pub last_materialize_db_write_micros: u64,
+    pub last_materialize_db_sync_micros: u64,
+    pub last_materialize_shm_invalidate_micros: u64,
 }
 
 #[derive(Debug)]
@@ -218,9 +286,236 @@ impl Drop for VfsWalFile {
 /// state without a separate checkpoint integration step.
 pub struct FollowerReplaySink {
     target: ReplayTargetConfig,
-    wal_file: Mutex<VfsWalFile>,
-    db_file: Mutex<VfsWalFile>,
-    state: Mutex<ReplayState>,
+    wal_file: Arc<Mutex<VfsWalFile>>,
+    state: Arc<Mutex<ReplayState>>,
+    materialize_tx: SyncSender<MaterializeBatch>,
+    materialize_queue_depth: Arc<AtomicUsize>,
+    wal_sync_state: Arc<WalSyncCoordinator>,
+}
+
+#[derive(Debug)]
+struct MaterializePage {
+    page_no: u32,
+    data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct MaterializeBatch {
+    target_offset: i64,
+    pages: Vec<MaterializePage>,
+}
+
+const MATERIALIZE_QUEUE_CAPACITY: usize = 4096;
+
+struct WalSyncCoordinator {
+    state: Mutex<WalSyncState>,
+    cv: Condvar,
+}
+
+#[derive(Debug)]
+struct WalSyncState {
+    pending_batches: u64,
+    pending_offset: i64,
+    first_pending_at: Option<Instant>,
+    shutdown: bool,
+}
+
+impl WalSyncCoordinator {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(WalSyncState {
+                pending_batches: 0,
+                pending_offset: -1,
+                first_pending_at: None,
+                shutdown: false,
+            }),
+            cv: Condvar::new(),
+        }
+    }
+}
+
+fn spawn_materializer(
+    target: ReplayTargetConfig,
+    wal_file: Arc<Mutex<VfsWalFile>>,
+    state: Arc<Mutex<ReplayState>>,
+    queue_depth: Arc<AtomicUsize>,
+    mut db_file: VfsWalFile,
+    materialize_rx: Receiver<MaterializeBatch>,
+) {
+    thread::spawn(move || {
+        while let Ok(batch) = materialize_rx.recv() {
+            queue_depth.fetch_sub(1, Ordering::Relaxed);
+            if let Err(err) = materialize_batch(
+                &target,
+                &wal_file,
+                &state,
+                &queue_depth,
+                &mut db_file,
+                batch,
+            ) {
+                if let Ok(mut st) = state.lock() {
+                    st.stats.materialize_errors += 1;
+                    st.stats.last_materialize_error = Some(err.to_string());
+                    st.stats.materialize_queue_depth = queue_depth.load(Ordering::Relaxed) as u64;
+                }
+            }
+        }
+    });
+}
+
+fn spawn_wal_sync_worker(
+    policy: FollowerWalSyncConfig,
+    wal_file: Arc<Mutex<VfsWalFile>>,
+    replay_state: Arc<Mutex<ReplayState>>,
+    sync_state: Arc<WalSyncCoordinator>,
+) {
+    if policy.mode != FollowerWalSyncMode::Coalesced {
+        return;
+    }
+
+    thread::spawn(move || {
+        let max_batches = policy.max_batches.max(1) as u64;
+        let max_delay = std::time::Duration::from_millis(policy.max_delay_ms.max(1));
+
+        loop {
+            let (batches, target_offset, delay_micros) = {
+                let mut state = match sync_state.state.lock() {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+
+                loop {
+                    if state.shutdown {
+                        return;
+                    }
+
+                    if state.pending_batches == 0 {
+                        state = match sync_state.cv.wait(state) {
+                            Ok(state) => state,
+                            Err(_) => return,
+                        };
+                        continue;
+                    }
+
+                    let first_pending_at = state.first_pending_at.unwrap_or_else(Instant::now);
+                    let elapsed = first_pending_at.elapsed();
+                    if state.pending_batches >= max_batches || elapsed >= max_delay {
+                        let batches = state.pending_batches;
+                        let target_offset = state.pending_offset;
+                        let delay_micros = elapsed.as_micros() as u64;
+                        state.pending_batches = 0;
+                        state.pending_offset = -1;
+                        state.first_pending_at = None;
+                        sync_state.cv.notify_all();
+                        break (batches, target_offset, delay_micros);
+                    }
+
+                    let timeout = max_delay.saturating_sub(elapsed);
+                    let Ok((next_state, _)) = sync_state.cv.wait_timeout(state, timeout) else {
+                        return;
+                    };
+                    state = next_state;
+                }
+            };
+
+            let sync_started = Instant::now();
+            let sync_result = wal_file
+                .lock()
+                .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))
+                .and_then(|mut wal| wal.sync());
+            let sync_micros = sync_started.elapsed().as_micros() as u64;
+            let pending_after_sync = sync_state
+                .state
+                .lock()
+                .map(|state| state.pending_batches)
+                .unwrap_or(0);
+
+            let Ok(mut st) = replay_state.lock() else {
+                return;
+            };
+            match sync_result {
+                Ok(()) => {
+                    st.stats.wal_syncs += 1;
+                    st.stats.coalesced_wal_syncs += 1;
+                    st.stats.wal_sync_batches += batches;
+                    st.stats.last_wal_sync_batches = batches;
+                    st.stats.wal_sync_micros += sync_micros;
+                    st.stats.last_wal_sync_micros = sync_micros;
+                    st.stats.wal_sync_delay_micros += delay_micros;
+                    st.stats.last_wal_sync_delay_micros = delay_micros;
+                    st.stats.last_wal_synced_offset = target_offset;
+                    st.stats.pending_wal_sync_batches = pending_after_sync;
+                    st.stats.last_wal_sync_error = None;
+                }
+                Err(err) => {
+                    st.stats.replay_errors += 1;
+                    st.stats.last_wal_sync_error = Some(err.to_string());
+                }
+            }
+        }
+    });
+}
+
+fn materialize_batch(
+    target: &ReplayTargetConfig,
+    wal_file: &Arc<Mutex<VfsWalFile>>,
+    state: &Arc<Mutex<ReplayState>>,
+    queue_depth: &Arc<AtomicUsize>,
+    db_file: &mut VfsWalFile,
+    batch: MaterializeBatch,
+) -> Result<()> {
+    let mut db_write_micros = 0u64;
+    let mut db_sync_micros = 0u64;
+
+    for page in &batch.pages {
+        let page_offset = (page.page_no as i64 - 1) * target.page_size as i64;
+        let write_started = Instant::now();
+        db_file.write_at(page_offset, &page.data).with_context(|| {
+            format!(
+                "failed to materialize DB page {} at offset {page_offset}",
+                page.page_no
+            )
+        })?;
+        db_write_micros += write_started.elapsed().as_micros() as u64;
+    }
+
+    if !batch.pages.is_empty() {
+        let sync_started = Instant::now();
+        db_file
+            .sync()
+            .context("failed to sync follower DB file after materialization")?;
+        db_sync_micros += sync_started.elapsed().as_micros() as u64;
+    }
+
+    let shm_started = Instant::now();
+    let shm_result = {
+        let mut wal = wal_file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+        wal.delete(&target.shm_path, false)
+    };
+    let shm_micros = shm_started.elapsed().as_micros() as u64;
+
+    let mut st = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
+    st.stats.materialize_batches += 1;
+    st.stats.materialize_frames += batch.pages.len() as u64;
+    st.stats.db_syncs += u64::from(!batch.pages.is_empty());
+    match shm_result {
+        Ok(()) => st.stats.shm_invalidations += 1,
+        Err(_) => st.stats.replay_errors += 1,
+    }
+    st.stats.materialize_db_write_micros += db_write_micros;
+    st.stats.materialize_db_sync_micros += db_sync_micros;
+    st.stats.materialize_shm_invalidate_micros += shm_micros;
+    st.stats.last_materialize_db_write_micros = db_write_micros;
+    st.stats.last_materialize_db_sync_micros = db_sync_micros;
+    st.stats.last_materialize_shm_invalidate_micros = shm_micros;
+    st.stats.materialize_queue_depth = queue_depth.load(Ordering::Relaxed) as u64;
+    st.stats.last_materialized_offset = batch.target_offset;
+    st.stats.last_materialize_error = None;
+    Ok(())
 }
 
 impl FollowerReplaySink {
@@ -249,17 +544,49 @@ impl FollowerReplaySink {
         })?;
 
         let frame_size = target.page_size as i64 + 24;
+        let wal_file = Arc::new(Mutex::new(wal_file));
+        let follower_wal_sync = target.follower_wal_sync.clone();
+        let wal_sync_policy = match follower_wal_sync.mode {
+            FollowerWalSyncMode::PerBatch => "per-batch",
+            FollowerWalSyncMode::Coalesced => "coalesced",
+        }
+        .to_string();
+        let state = Arc::new(Mutex::new(ReplayState {
+            stats: ReplayStats {
+                last_applied_offset: -1,
+                last_wal_synced_offset: -1,
+                last_materialized_offset: -1,
+                wal_sync_policy,
+                ..ReplayStats::default()
+            },
+            frame_size,
+        }));
+        let (materialize_tx, materialize_rx) =
+            mpsc::sync_channel::<MaterializeBatch>(MATERIALIZE_QUEUE_CAPACITY);
+        let materialize_queue_depth = Arc::new(AtomicUsize::new(0));
+        spawn_materializer(
+            target.clone(),
+            wal_file.clone(),
+            state.clone(),
+            materialize_queue_depth.clone(),
+            db_file,
+            materialize_rx,
+        );
+        let wal_sync_state = Arc::new(WalSyncCoordinator::new());
+        spawn_wal_sync_worker(
+            follower_wal_sync,
+            wal_file.clone(),
+            state.clone(),
+            wal_sync_state.clone(),
+        );
+
         Ok(Arc::new(Self {
             target,
-            wal_file: Mutex::new(wal_file),
-            db_file: Mutex::new(db_file),
-            state: Mutex::new(ReplayState {
-                stats: ReplayStats {
-                    last_applied_offset: -1,
-                    ..ReplayStats::default()
-                },
-                frame_size,
-            }),
+            wal_file,
+            state,
+            materialize_tx,
+            materialize_queue_depth,
+            wal_sync_state,
         }))
     }
 
@@ -279,21 +606,18 @@ impl FollowerReplaySink {
             .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
 
         let mut wal_needs_sync = false;
-        let mut db_needs_sync = false;
         let mut batch_wal_write_micros = 0u64;
-        let mut batch_db_write_micros = 0u64;
         let mut batch_wal_sync_micros = 0u64;
-        let mut batch_db_sync_micros = 0u64;
+        let mut materialize_pages = Vec::new();
+        let mut materialize_offset = st.stats.last_applied_offset;
+        let mut sync_offset = st.stats.last_applied_offset;
+        let mut materialize_needed = false;
 
         {
             let mut wal = self
                 .wal_file
                 .lock()
                 .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
-            let mut db = self
-                .db_file
-                .lock()
-                .map_err(|_| anyhow::anyhow!("replay DB file lock poisoned"))?;
 
             for record in &batch.records {
                 match record {
@@ -317,6 +641,9 @@ impl FollowerReplaySink {
                         st.stats.applied_records += 1;
                         st.stats.applied_bytes += data.len() as u64;
                         st.stats.last_applied_offset = 0;
+                        materialize_offset = 0;
+                        sync_offset = 0;
+                        materialize_needed = true;
                     }
                     WalRecord::Frame {
                         wal_offset,
@@ -368,18 +695,16 @@ impl FollowerReplaySink {
                         batch_wal_write_micros += wal_write_started.elapsed().as_micros() as u64;
                         wal_needs_sync = true;
 
-                        let page_offset = (*page_no as i64 - 1) * self.target.page_size as i64;
                         let page_bytes = &frame_data[24..];
-                        let db_write_started = Instant::now();
-                        db.write_at(page_offset, page_bytes).with_context(|| {
-                            format!(
-                                "failed to materialize DB page {page_no} at offset {page_offset}"
-                            )
-                        })?;
-                        batch_db_write_micros += db_write_started.elapsed().as_micros() as u64;
-                        db_needs_sync = true;
+                        materialize_pages.push(MaterializePage {
+                            page_no: *page_no,
+                            data: page_bytes.to_vec(),
+                        });
 
                         st.stats.last_applied_offset = wal_offset;
+                        materialize_offset = wal_offset;
+                        sync_offset = wal_offset;
+                        materialize_needed = true;
                         st.stats.applied_records += 1;
                         st.stats.applied_frames += 1;
                         st.stats.applied_bytes += frame_data.len() as u64;
@@ -387,19 +712,37 @@ impl FollowerReplaySink {
                 }
             }
 
-            if wal_needs_sync {
+            if wal_needs_sync && self.target.follower_wal_sync.mode == FollowerWalSyncMode::PerBatch
+            {
                 let sync_started = Instant::now();
                 wal.sync()
                     .context("failed to sync WAL replay file after batch apply")?;
                 batch_wal_sync_micros += sync_started.elapsed().as_micros() as u64;
                 st.stats.wal_syncs += 1;
+                st.stats.wal_sync_batches += 1;
+                st.stats.last_wal_sync_batches = 1;
+                st.stats.last_wal_synced_offset = sync_offset;
             }
-            if db_needs_sync {
-                let sync_started = Instant::now();
-                db.sync()
-                    .context("failed to sync follower DB file after batch apply")?;
-                batch_db_sync_micros += sync_started.elapsed().as_micros() as u64;
-                st.stats.db_syncs += 1;
+        }
+
+        if wal_needs_sync && self.target.follower_wal_sync.mode == FollowerWalSyncMode::Coalesced {
+            self.mark_wal_sync_pending(&mut st, sync_offset)?;
+        }
+
+        if materialize_needed {
+            let materialize_batch = MaterializeBatch {
+                target_offset: materialize_offset,
+                pages: materialize_pages,
+            };
+            self.materialize_queue_depth.fetch_add(1, Ordering::Relaxed);
+            st.stats.materialize_queue_depth =
+                self.materialize_queue_depth.load(Ordering::Relaxed) as u64;
+            if let Err(err) = self.materialize_tx.send(materialize_batch) {
+                self.materialize_queue_depth.fetch_sub(1, Ordering::Relaxed);
+                st.stats.materialize_queue_depth =
+                    self.materialize_queue_depth.load(Ordering::Relaxed) as u64;
+                st.stats.materialize_errors += 1;
+                anyhow::bail!("failed to enqueue follower DB materialization batch: {err}");
             }
         }
 
@@ -407,18 +750,35 @@ impl FollowerReplaySink {
         st.stats.last_batch_records = batch.len() as u64;
         st.stats.last_apply_micros = started.elapsed().as_micros() as u64;
         st.stats.wal_write_micros += batch_wal_write_micros;
-        st.stats.db_write_micros += batch_db_write_micros;
         st.stats.wal_sync_micros += batch_wal_sync_micros;
-        st.stats.db_sync_micros += batch_db_sync_micros;
         st.stats.last_wal_write_micros = batch_wal_write_micros;
-        st.stats.last_db_write_micros = batch_db_write_micros;
-        st.stats.last_wal_sync_micros = batch_wal_sync_micros;
-        st.stats.last_db_sync_micros = batch_db_sync_micros;
-        let shm_started = Instant::now();
-        self.invalidate_shm_locked(&mut st);
-        let shm_micros = shm_started.elapsed().as_micros() as u64;
-        st.stats.shm_invalidate_micros += shm_micros;
-        st.stats.last_shm_invalidate_micros = shm_micros;
+        if batch_wal_sync_micros != 0 {
+            st.stats.last_wal_sync_micros = batch_wal_sync_micros;
+        }
+        Ok(())
+    }
+
+    fn mark_wal_sync_pending(&self, st: &mut ReplayState, target_offset: i64) -> Result<()> {
+        let max_pending = MATERIALIZE_QUEUE_CAPACITY as u64;
+        let mut sync_state = self
+            .wal_sync_state
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("WAL sync state lock poisoned"))?;
+        while sync_state.pending_batches >= max_pending {
+            sync_state = self
+                .wal_sync_state
+                .cv
+                .wait(sync_state)
+                .map_err(|_| anyhow::anyhow!("WAL sync state lock poisoned"))?;
+        }
+        sync_state.pending_batches += 1;
+        sync_state.pending_offset = target_offset;
+        if sync_state.first_pending_at.is_none() {
+            sync_state.first_pending_at = Some(Instant::now());
+        }
+        st.stats.pending_wal_sync_batches = sync_state.pending_batches;
+        self.wal_sync_state.cv.notify_one();
         Ok(())
     }
 
@@ -450,6 +810,15 @@ impl FollowerReplaySink {
                 32 + (frames - 1) * st.frame_size
             }
         };
+        st.stats.last_wal_synced_offset = st.stats.last_applied_offset;
+        st.stats.last_materialized_offset = st.stats.last_applied_offset;
+        if let Ok(mut sync_state) = self.wal_sync_state.state.lock() {
+            sync_state.pending_batches = 0;
+            sync_state.pending_offset = -1;
+            sync_state.first_pending_at = None;
+            st.stats.pending_wal_sync_batches = 0;
+            self.wal_sync_state.cv.notify_all();
+        }
         self.invalidate_shm_locked(&mut st);
         Ok(())
     }
@@ -484,6 +853,15 @@ impl FollowerReplaySink {
         match f.delete(&self.target.shm_path, false) {
             Ok(()) => st.stats.shm_invalidations += 1,
             Err(_) => st.stats.replay_errors += 1,
+        }
+    }
+}
+
+impl Drop for FollowerReplaySink {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.wal_sync_state.state.lock() {
+            state.shutdown = true;
+            self.wal_sync_state.cv.notify_all();
         }
     }
 }
@@ -543,7 +921,7 @@ pub fn clear_all() {
 
 #[cfg(test)]
 mod tests {
-    use std::ptr;
+    use std::{ptr, thread, time::Duration};
 
     use tempfile::TempDir;
 
@@ -566,7 +944,48 @@ mod tests {
             wal_path: format!("{}-wal", db.to_string_lossy()),
             shm_path: format!("{}-shm", db.to_string_lossy()),
             page_size: 4096,
+            follower_wal_sync: FollowerWalSyncConfig::default(),
         }
+    }
+
+    fn coalesced_target(
+        tmp: &TempDir,
+        max_batches: usize,
+        max_delay_ms: u64,
+    ) -> ReplayTargetConfig {
+        let mut target = target(tmp);
+        target.follower_wal_sync = FollowerWalSyncConfig {
+            mode: FollowerWalSyncMode::Coalesced,
+            max_batches,
+            max_delay_ms,
+        };
+        target
+    }
+
+    fn wait_for_materialized(sink: &FollowerReplaySink, offset: i64) {
+        for _ in 0..100 {
+            if sink.stats().last_materialized_offset >= offset {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "timed out waiting for materialized offset {offset}, stats={:?}",
+            sink.stats()
+        );
+    }
+
+    fn wait_for_wal_synced(sink: &FollowerReplaySink, offset: i64) {
+        for _ in 0..100 {
+            if sink.stats().last_wal_synced_offset >= offset {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "timed out waiting for WAL synced offset {offset}, stats={:?}",
+            sink.stats()
+        );
     }
 
     #[test]
@@ -588,6 +1007,7 @@ mod tests {
 
         sink.apply_record(&header).expect("apply header");
         sink.apply_record(&frame).expect("apply first");
+        wait_for_materialized(&sink, 32);
         sink.apply_record(&frame).expect("idempotent duplicate");
         let err = sink
             .apply_record(&WalRecord::Frame {
@@ -638,6 +1058,7 @@ mod tests {
 
         sink.apply_record(&header).expect("apply header");
         sink.apply_record(&frame_record).expect("apply frame");
+        wait_for_materialized(&sink, 32);
 
         let wal = std::fs::read(tmp.path().join("follower.db-wal")).expect("read wal");
         assert_eq!(&wal[..32], &(0..32u8).collect::<Vec<_>>()[..]);
@@ -675,13 +1096,67 @@ mod tests {
         ]))
         .expect("apply batch");
 
+        wait_for_materialized(&sink, 32 + (4096 + 24) as i64);
+
         let stats = sink.stats();
         assert_eq!(stats.applied_batches, 1);
         assert_eq!(stats.applied_records, 3);
         assert_eq!(stats.applied_frames, 2);
         assert_eq!(stats.last_batch_records, 3);
         assert_eq!(stats.wal_syncs, 1);
+        assert_eq!(stats.last_wal_synced_offset, 32 + (4096 + 24) as i64);
         assert_eq!(stats.db_syncs, 1);
+        assert_eq!(stats.materialize_batches, 1);
+        assert_eq!(stats.materialize_frames, 2);
+    }
+
+    #[test]
+    fn coalesced_wal_syncs_after_batch_threshold() {
+        if !sqlite_api_is_available() {
+            eprintln!("skipping replay test: sqlite extension API is unavailable");
+            return;
+        }
+        let tmp = TempDir::new().expect("tmp dir");
+        let sink = FollowerReplaySink::open(coalesced_target(&tmp, 2, 10_000)).expect("open sink");
+        sink.apply_record(&WalRecord::Header {
+            data: vec![0u8; 32],
+        })
+        .expect("apply header");
+        assert_eq!(sink.stats().last_applied_offset, 0);
+        assert_eq!(sink.stats().last_wal_synced_offset, -1);
+        let frame = vec![0u8; 4096 + 24];
+        sink.apply_record(&WalRecord::Frame {
+            wal_offset: 32,
+            page_no: 1,
+            data: frame,
+        })
+        .expect("apply frame");
+        wait_for_wal_synced(&sink, 32);
+        let stats = sink.stats();
+        assert_eq!(stats.wal_sync_policy, "coalesced");
+        assert_eq!(stats.coalesced_wal_syncs, 1);
+        assert_eq!(stats.last_wal_sync_batches, 2);
+    }
+
+    #[test]
+    fn coalesced_wal_syncs_after_delay() {
+        if !sqlite_api_is_available() {
+            eprintln!("skipping replay test: sqlite extension API is unavailable");
+            return;
+        }
+        let tmp = TempDir::new().expect("tmp dir");
+        let sink = FollowerReplaySink::open(coalesced_target(&tmp, 64, 10)).expect("open sink");
+        sink.apply_record(&WalRecord::Header {
+            data: vec![0u8; 32],
+        })
+        .expect("apply header");
+        assert_eq!(sink.stats().last_applied_offset, 0);
+        assert_eq!(sink.stats().last_wal_synced_offset, -1);
+        wait_for_wal_synced(&sink, 0);
+        let stats = sink.stats();
+        assert_eq!(stats.coalesced_wal_syncs, 1);
+        assert_eq!(stats.last_wal_sync_batches, 1);
+        assert!(stats.last_wal_sync_delay_micros > 0);
     }
 
     #[test]
@@ -709,7 +1184,9 @@ mod tests {
             data: frame,
         })
         .expect("apply second");
+        wait_for_materialized(&sink, 32 + (4096 + 24) as i64);
         sink.truncate_at(32).expect("truncate");
         assert_eq!(sink.stats().last_applied_offset, -1);
+        assert_eq!(sink.stats().last_materialized_offset, -1);
     }
 }
