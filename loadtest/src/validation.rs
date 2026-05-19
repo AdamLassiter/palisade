@@ -9,8 +9,10 @@ use rusqlite::Connection;
 
 use crate::{
     db::{
+        is_lock_or_busy,
         open_cluster_replica_conn,
         open_cluster_replica_raft_conn,
+        open_evfs_control_conn,
         open_validation_conn,
         validate_ciphertext,
     },
@@ -21,6 +23,7 @@ use crate::{
         Config,
         Engine,
         NodeInfo,
+        RaftStatusDoc,
         ReadSurface,
         Runtime,
         SharedOracle,
@@ -45,7 +48,7 @@ pub(crate) fn run_validation_with_retries(
             }
             Err(err) => {
                 let msg = err.to_string();
-                if msg.contains("locked") || msg.contains("busy") {
+                if is_lock_or_busy(&msg) {
                     last_err = Some(err);
                     thread::sleep(Duration::from_millis(250));
                     continue;
@@ -134,7 +137,7 @@ fn validate_database(
     }
 
     if cfg.engine.uses_cluster() {
-        validate_cluster(cfg, runtime, actual)?;
+        validate_cluster(cfg, runtime, actual, report)?;
         report.ok("raft convergence and follower write rejection passed");
     }
 
@@ -158,30 +161,39 @@ fn validate_order_states(
     Ok(())
 }
 
-fn validate_cluster(cfg: &Config, runtime: &Runtime, leader_actual: Aggregate) -> AppResult<()> {
-    wait_for_replica_match(cfg, runtime, leader_actual)?;
+fn validate_cluster(
+    cfg: &Config,
+    runtime: &Runtime,
+    leader_actual: Aggregate,
+    report: &mut ValidationReport,
+) -> AppResult<()> {
+    let convergence_elapsed = wait_for_replica_match(cfg, runtime, leader_actual)?;
+    report.ok(format!(
+        "raft replicas converged in {:.2}s",
+        convergence_elapsed.as_secs_f64()
+    ));
 
     for follower in &runtime.followers {
         let before = collect_aggregate(&open_cluster_replica_conn(follower)?, cfg.engine)?;
+        let probe_started = Instant::now();
         let write_err = probe_follower_write_rejection(cfg, follower)?;
-        println!(
-            "validation: follower {} rejected write probe: {}",
-            follower.node_id, write_err
-        );
+        let probe_elapsed = probe_started.elapsed();
+        report.ok(format!(
+            "follower {} rejected write probe in {:.3}ms: {}",
+            follower.node_id,
+            probe_elapsed.as_secs_f64() * 1000.0,
+            write_err
+        ));
         let wal_residue = follower_wal_residue_size(follower)?;
-        println!(
-            "validation: follower {} local wal residue {} bytes",
+        report.ok(format!(
+            "follower {} local wal residue {} bytes",
             follower.node_id, wal_residue
-        );
+        ));
         let after = collect_aggregate(&open_cluster_replica_conn(follower)?, cfg.engine)?;
         if !same_aggregate(before, after) {
-            println!(
-                "validation: follower {} aggregate changed before={:?} after={:?}",
-                follower.node_id, before, after
-            );
             return Err(format!(
-                "follower {} unexpectedly changed state after a write attempt",
-                follower.node_id
+                "follower {} unexpectedly changed state after a write attempt: before={before:?} after={after:?}",
+                follower.node_id,
             )
             .into());
         }
@@ -201,26 +213,115 @@ fn wait_for_replica_match(
     cfg: &Config,
     runtime: &Runtime,
     leader_actual: Aggregate,
-) -> AppResult<()> {
+) -> AppResult<Duration> {
+    let started = Instant::now();
     let deadline = Instant::now() + CONVERGENCE_TIMEOUT;
+    let status_conn = open_evfs_control_conn(&runtime.leader_db_path, &runtime.libs)?;
+    let leader_raft_vfs = runtime
+        .leader_raft_vfs_name
+        .as_deref()
+        .ok_or("missing leader raft vfs for cluster validation")?;
+    let follower_vfs_names = runtime
+        .followers
+        .iter()
+        .map(|follower| follower.raft_vfs_name.as_str())
+        .collect::<Vec<_>>();
+    let mut last_mismatch = "no replica comparison attempted".to_string();
+
     loop {
-        let mut all_match = true;
-        for follower in &runtime.followers {
-            let conn = open_cluster_replica_conn(follower)?;
-            let agg = collect_aggregate(&conn, cfg.engine)?;
-            if !same_aggregate(leader_actual, agg) {
-                all_match = false;
-                break;
+        let status = read_raft_status(&status_conn)?;
+        let last_status = replay_status_summary(&status, leader_raft_vfs, &follower_vfs_names);
+
+        if replicas_replayed_to_leader(&status, leader_raft_vfs, &follower_vfs_names)? {
+            let mut all_match = true;
+            for follower in &runtime.followers {
+                match collect_aggregate(&open_cluster_replica_conn(follower)?, cfg.engine) {
+                    Ok(agg) if same_aggregate(leader_actual, agg) => {}
+                    Ok(agg) => {
+                        all_match = false;
+                        last_mismatch = format!(
+                            "follower {} aggregate mismatch: leader={leader_actual:?} follower={agg:?}",
+                            follower.node_id
+                        );
+                        break;
+                    }
+                    Err(err) => {
+                        all_match = false;
+                        last_mismatch =
+                            format!("follower {} aggregate read failed: {err}", follower.node_id);
+                        break;
+                    }
+                }
+            }
+            if all_match {
+                return Ok(started.elapsed());
             }
         }
-        if all_match {
-            return Ok(());
-        }
+
         if Instant::now() >= deadline {
-            return Err("timed out waiting for followers to match leader aggregates".into());
+            return Err(format!(
+                "timed out waiting for followers to match leader aggregates; {last_status}; {last_mismatch}"
+            )
+            .into());
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn read_raft_status(conn: &Connection) -> AppResult<RaftStatusDoc> {
+    let status: String = conn.query_row("SELECT evfs_raft_status()", [], |r| r.get(0))?;
+    Ok(serde_json::from_str(&status)?)
+}
+
+fn replicas_replayed_to_leader(
+    status: &RaftStatusDoc,
+    leader_raft_vfs: &str,
+    follower_vfs_names: &[&str],
+) -> AppResult<bool> {
+    let leader_offset = status
+        .nodes
+        .iter()
+        .find(|node| node.raft_vfs_name == leader_raft_vfs)
+        .ok_or_else(|| format!("raft status missing leader vfs {leader_raft_vfs}"))?
+        .committed_wal_offset as i64;
+
+    for follower_vfs in follower_vfs_names {
+        let follower = status
+            .nodes
+            .iter()
+            .find(|node| node.raft_vfs_name == *follower_vfs)
+            .ok_or_else(|| format!("raft status missing follower vfs {follower_vfs}"))?;
+        if follower.replay.last_applied_offset < leader_offset {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn replay_status_summary(
+    status: &RaftStatusDoc,
+    leader_raft_vfs: &str,
+    follower_vfs_names: &[&str],
+) -> String {
+    let leader_offset = status
+        .nodes
+        .iter()
+        .find(|node| node.raft_vfs_name == leader_raft_vfs)
+        .map(|node| node.committed_wal_offset as i64);
+    let followers = follower_vfs_names
+        .iter()
+        .map(|follower_vfs| {
+            let offset = status
+                .nodes
+                .iter()
+                .find(|node| node.raft_vfs_name == *follower_vfs)
+                .map(|node| node.replay.last_applied_offset);
+            format!("{follower_vfs}={offset:?}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("leader {leader_raft_vfs} committed={leader_offset:?}; follower replay {followers}")
 }
 
 fn same_aggregate(a: Aggregate, b: Aggregate) -> bool {
@@ -280,6 +381,7 @@ fn collect_aggregate(conn: &Connection, engine: Engine) -> AppResult<Aggregate> 
 
 fn probe_follower_write_rejection(cfg: &Config, follower: &NodeInfo) -> AppResult<String> {
     let conn = open_cluster_replica_raft_conn(follower)?;
+    conn.busy_handler(Some(|_| false))?;
     let table = table_name(cfg.engine, "accounts", ReadSurface::Physical);
 
     match conn.execute_batch("BEGIN IMMEDIATE;") {

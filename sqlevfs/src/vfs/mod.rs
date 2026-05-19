@@ -853,8 +853,10 @@ unsafe extern "C" fn evfs_lock(file: *mut sqlite3_file, lock_type: c_int) -> c_i
             && let Some(ref raft) = *(*efile).raft_handle
             && !raft.is_leader()
         {
-            eprintln!("sqlevfs: evfs_lock: refusing RESERVED lock on follower node");
-            return SQLITE_BUSY;
+            if debug() {
+                eprintln!("sqlevfs: evfs_lock: refusing RESERVED lock on follower node");
+            }
+            return SQLITE_READONLY;
         }
 
         ((*(*inner).pMethods).xLock.unwrap())(inner, lock_type)
@@ -1005,10 +1007,12 @@ unsafe extern "C" fn evfs_shm_lock(
         {
             // In WAL mode, shared-memory locks are the primary writer gate.
             // Reject them on followers before SQLite can emit a local WAL frame.
-            eprintln!(
-                "sqlevfs: evfs_shm_lock: refusing WAL writer lock on follower offset={offset} n={n} flags={flags:#x}"
-            );
-            return SQLITE_BUSY;
+            if debug() {
+                eprintln!(
+                    "sqlevfs: evfs_shm_lock: refusing WAL writer lock on follower offset={offset} n={n} flags={flags:#x}"
+                );
+            }
+            return SQLITE_READONLY;
         }
         match (*(*inner).pMethods).xShmLock {
             Some(f) => f(inner, offset, n, flags),

@@ -3,6 +3,8 @@ set -euo pipefail
 
 MODE="debug"
 ENGINE="cluster"
+DURATION_SECS=60
+WORKLOAD="balanced"
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -20,6 +22,16 @@ while [[ $# -gt 0 ]]; do
     --engine)
       ENGINE="${2:-cluster}"
       ARGS+=("$1" "$ENGINE")
+      shift 2
+      ;;
+    --workload|--profile)
+      WORKLOAD="${2:-balanced}"
+      ARGS+=("$1" "$WORKLOAD")
+      shift 2
+      ;;
+    --duration-secs)
+      DURATION_SECS="${2:-60}"
+      ARGS+=("$1" "$DURATION_SECS")
       shift 2
       ;;
     *)
@@ -44,13 +56,23 @@ cd loadtest
 
 SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
 CMD=("./target/$MODE/loadtest" "${ARGS[@]}")
+APP_TIMEOUT_SECS=$((DURATION_SECS * 2 + 30))
+RUN_MULTIPLIER=1
+if [[ "$WORKLOAD" == "all" ]]; then
+  RUN_MULTIPLIER=$((RUN_MULTIPLIER * 6))
+fi
+if [[ "$ENGINE" == "all" ]]; then
+  RUN_MULTIPLIER=$((RUN_MULTIPLIER * 3))
+fi
+APP_TIMEOUT_SECS=$((APP_TIMEOUT_SECS * RUN_MULTIPLIER))
+RUN_CMD=(timeout "$APP_TIMEOUT_SECS" "${CMD[@]}")
 
-if [[ "$ENGINE" == "baseline" ]]; then
-  "${CMD[@]}"
+if [[ "$ENGINE" == "sqlite" || "$ENGINE" == "baseline" ]]; then
+  "${RUN_CMD[@]}"
 else
   EVFS_KEYFILE="$KEYFILE" \
     LD_PRELOAD="$SQLSHIM_LIB" \
     RUST_BACKTRACE=full \
     RUST_LIB_BACKTRACE=1 \
-    "${CMD[@]}"
+    "${RUN_CMD[@]}"
 fi

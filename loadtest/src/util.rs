@@ -1,6 +1,14 @@
 use std::{
+    io::{self, IsTerminal, Write},
     net::TcpListener,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        Mutex,
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -15,22 +23,125 @@ use crate::types::{
     TENANTS,
     WorkerMetrics,
     WorkerSpec,
+    WorkloadProfile,
 };
 
-pub(crate) fn worker_spec(worker_id: usize) -> WorkerSpec {
-    match worker_id % 6 {
-        0 => WorkerSpec {
-            role: Role::Admin,
-            tenant: None,
-        },
-        1 => WorkerSpec {
-            role: Role::Ops,
-            tenant: None,
-        },
-        _ => WorkerSpec {
+pub(crate) const RESET: &str = "\x1b[0m";
+pub(crate) const BOLD: &str = "\x1b[1m";
+pub(crate) const DIM: &str = "\x1b[2m";
+pub(crate) const GREEN: &str = "\x1b[32m";
+pub(crate) const YELLOW: &str = "\x1b[33m";
+pub(crate) const BLUE: &str = "\x1b[34m";
+const MAGENTA: &str = "\x1b[35m";
+pub(crate) const CYAN: &str = "\x1b[36m";
+pub(crate) const RED: &str = "\x1b[31m";
+
+static TRANSIENT_ACTIVE: OnceLock<Mutex<bool>> = OnceLock::new();
+
+pub(crate) fn style(code: &'static str) -> &'static str {
+    if io::stdout().is_terminal() { code } else { "" }
+}
+
+fn transient_state() -> &'static Mutex<bool> {
+    TRANSIENT_ACTIVE.get_or_init(|| Mutex::new(false))
+}
+
+pub(crate) fn clear_transient() {
+    let Ok(mut active) = transient_state().lock() else {
+        return;
+    };
+    if *active && io::stdout().is_terminal() {
+        print!("\r\x1b[2K");
+        let _ = io::stdout().flush();
+    }
+    *active = false;
+}
+
+pub(crate) fn transient(msg: impl AsRef<str>) {
+    if !io::stdout().is_terminal() {
+        return;
+    }
+    let Ok(mut active) = transient_state().lock() else {
+        return;
+    };
+    print!(
+        "\r\x1b[2K{}·{} {}{}{}",
+        style(DIM),
+        style(RESET),
+        style(DIM),
+        msg.as_ref(),
+        style(RESET)
+    );
+    let _ = io::stdout().flush();
+    *active = true;
+}
+
+pub(crate) fn persist(msg: impl AsRef<str>) {
+    clear_transient();
+    println!("  {}•{} {}", style(CYAN), style(RESET), msg.as_ref());
+}
+
+pub(crate) fn worker_spec(profile: WorkloadProfile, worker_id: usize) -> WorkerSpec {
+    match profile {
+        WorkloadProfile::ReadHeavy => WorkerSpec {
             role: Role::User,
             tenant: Some(worker_id % TENANTS),
         },
+        WorkloadProfile::WriteHeavy => match worker_id % 5 {
+            0 => WorkerSpec {
+                role: Role::Ops,
+                tenant: None,
+            },
+            _ => WorkerSpec {
+                role: Role::User,
+                tenant: Some(worker_id % TENANTS),
+            },
+        },
+        WorkloadProfile::TransferHeavy => match worker_id % 4 {
+            0..=2 => WorkerSpec {
+                role: Role::Ops,
+                tenant: None,
+            },
+            _ => WorkerSpec {
+                role: Role::User,
+                tenant: Some(worker_id % TENANTS),
+            },
+        },
+        WorkloadProfile::ScanHeavy => match worker_id % 4 {
+            0..=2 => WorkerSpec {
+                role: Role::Admin,
+                tenant: None,
+            },
+            _ => WorkerSpec {
+                role: Role::User,
+                tenant: Some(worker_id % TENANTS),
+            },
+        },
+        WorkloadProfile::Contention => match worker_id % 4 {
+            0 => WorkerSpec {
+                role: Role::Ops,
+                tenant: None,
+            },
+            _ => WorkerSpec {
+                role: Role::User,
+                tenant: Some(0),
+            },
+        },
+        WorkloadProfile::Balanced => match worker_id % 6 {
+            0 => WorkerSpec {
+                role: Role::Admin,
+                tenant: None,
+            },
+            1 => WorkerSpec {
+                role: Role::Ops,
+                tenant: None,
+            },
+            _ => WorkerSpec {
+                role: Role::User,
+                tenant: Some(worker_id % TENANTS),
+            },
+        },
+        WorkloadProfile::All => worker_spec(WorkloadProfile::Balanced, worker_id),
     }
 }
 
@@ -57,7 +168,7 @@ pub(crate) fn transition_for_rng(rng: &mut SimpleRng) -> Option<(&'static str, &
 
 pub(crate) fn table_name(engine: Engine, base: &str, surface: ReadSurface) -> String {
     match (engine, surface) {
-        (Engine::Baseline, _) => base.to_string(),
+        (Engine::Sqlite, _) => base.to_string(),
         (_, ReadSurface::Physical) => format!("__sec_{base}"),
     }
 }
@@ -77,7 +188,13 @@ pub(crate) fn evfs_keyring_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("evfs-keyring")
 }
 
-pub(crate) fn print_metrics(cfg: &Config, metrics: &WorkerMetrics, elapsed: Duration) {
+pub(crate) fn print_metrics(
+    cfg: &Config,
+    metrics: &WorkerMetrics,
+    elapsed: Duration,
+    workload_elapsed: Duration,
+    validation_elapsed: Duration,
+) {
     let total_ops = metrics.point_reads
         + metrics.range_reads
         + metrics.transfers_ok
@@ -86,28 +203,63 @@ pub(crate) fn print_metrics(cfg: &Config, metrics: &WorkerMetrics, elapsed: Dura
         + metrics.order_updates
         + metrics.admin_scans;
 
-    println!("\nSummary");
-    println!("  elapsed: {:.2}s", elapsed.as_secs_f64());
-    println!("  engine: {}", cfg.engine);
-    println!("  total ops: {}", total_ops);
+    println!("\n{}{}Summary{}", style(BOLD), style(CYAN), style(RESET));
     println!(
-        "  ops/sec: {:.2}",
-        total_ops as f64 / elapsed.as_secs_f64().max(0.001)
+        "  {}elapsed{}: {:.2}s",
+        style(DIM),
+        style(RESET),
+        elapsed.as_secs_f64()
     );
     println!(
-        "  reads: point={} range={} admin_scans={}",
-        metrics.point_reads, metrics.range_reads, metrics.admin_scans
+        "  {}workload time{}: {:.2}s",
+        style(DIM),
+        style(RESET),
+        workload_elapsed.as_secs_f64()
     );
     println!(
-        "  writes: transfers_ok={} transfers_skipped={} orders_created={} order_updates={}",
+        "  {}validation time{}: {:.2}s",
+        style(DIM),
+        style(RESET),
+        validation_elapsed.as_secs_f64()
+    );
+    println!("  {}engine{}: {}", style(DIM), style(RESET), cfg.engine);
+    println!(
+        "  {}workload{}: {} ({})",
+        style(DIM),
+        style(RESET),
+        cfg.workload,
+        cfg.workload.description()
+    );
+    println!("  {}total ops{}: {}", style(DIM), style(RESET), total_ops);
+    println!(
+        "  {}ops/sec{}: {:.2}",
+        style(DIM),
+        style(RESET),
+        total_ops as f64 / workload_elapsed.as_secs_f64().max(0.001)
+    );
+    println!(
+        "  {}reads{}: point={} range={} admin_scans={}",
+        style(DIM),
+        style(RESET),
+        metrics.point_reads,
+        metrics.range_reads,
+        metrics.admin_scans
+    );
+    println!(
+        "  {}writes{}: transfers_ok={} transfers_skipped={} orders_created={} order_updates={}",
+        style(DIM),
+        style(RESET),
         metrics.transfers_ok,
         metrics.transfers_skipped,
         metrics.orders_created,
         metrics.order_updates
     );
     println!(
-        "  control: refreshes={} errors={}",
-        metrics.refreshes, metrics.errors
+        "  {}control{}: refreshes={} errors={}",
+        style(DIM),
+        style(RESET),
+        metrics.refreshes,
+        metrics.errors
     );
     print_latency("point read", metrics.point_reads, metrics.point_read_ns);
     print_latency("range read", metrics.range_reads, metrics.range_read_ns);
@@ -134,5 +286,127 @@ fn print_latency(label: &str, count: u64, total_ns: u128) {
         return;
     }
     let avg_ms = total_ns as f64 / count as f64 / 1_000_000.0;
-    println!("  avg {label}: {avg_ms:.3}ms");
+    println!("  {}avg {label}{}: {avg_ms:.3}ms", style(DIM), style(RESET));
+}
+
+pub(crate) fn banner(cfg: &Config) {
+    println!(
+        "\n{}{}palisade loadtest{} {}mode={} engine={} workload={} workers={} duration={}s seed={:#x}{}",
+        style(BOLD),
+        style(MAGENTA),
+        style(RESET),
+        style(DIM),
+        cfg.mode,
+        cfg.engine,
+        cfg.workload,
+        cfg.workers,
+        cfg.duration.as_secs(),
+        cfg.seed,
+        style(RESET)
+    );
+    println!(
+        "{}profile{} {}",
+        style(DIM),
+        style(RESET),
+        cfg.workload.description()
+    );
+}
+
+pub(crate) fn phase(msg: impl AsRef<str>) {
+    clear_transient();
+    println!("{}→{} {}", style(BLUE), style(RESET), msg.as_ref());
+}
+
+pub(crate) fn success(msg: impl AsRef<str>) {
+    clear_transient();
+    println!("{}✓{} {}", style(GREEN), style(RESET), msg.as_ref());
+}
+
+pub(crate) fn warn(msg: impl AsRef<str>) {
+    clear_transient();
+    println!("{}!{} {}", style(YELLOW), style(RESET), msg.as_ref());
+}
+
+pub(crate) fn fail(msg: impl AsRef<str>) {
+    clear_transient();
+    eprintln!("{}✗{} {}", style(RED), style(RESET), msg.as_ref());
+}
+
+pub(crate) fn print_validation(checks: &[String]) {
+    clear_transient();
+    println!("\n{}{}Validation{}", style(BOLD), style(CYAN), style(RESET));
+    for line in checks {
+        println!("  {}{}{}", style(GREEN), line, style(RESET));
+    }
+}
+
+pub(crate) struct Spinner {
+    done: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+    label: String,
+    animated: bool,
+}
+
+impl Spinner {
+    pub(crate) fn start(label: impl Into<String>) -> Self {
+        let label = label.into();
+        let animated = io::stderr().is_terminal();
+        let done = Arc::new(AtomicBool::new(false));
+        let handle = if animated {
+            let done_for_thread = done.clone();
+            let label_for_thread = label.clone();
+            Some(thread::spawn(move || {
+                let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let mut i = 0usize;
+                while !done_for_thread.load(Ordering::Relaxed) {
+                    eprint!(
+                        "\r{}{}{} {}{}{}",
+                        style(CYAN),
+                        frames[i % frames.len()],
+                        style(RESET),
+                        style(DIM),
+                        label_for_thread,
+                        style(RESET)
+                    );
+                    let _ = io::stderr().flush();
+                    i += 1;
+                    thread::sleep(Duration::from_millis(90));
+                }
+            }))
+        } else {
+            phase(&label);
+            None
+        };
+        Self {
+            done,
+            handle,
+            label,
+            animated,
+        }
+    }
+
+    pub(crate) fn finish(mut self, msg: impl AsRef<str>) {
+        self.stop();
+        success(msg);
+    }
+
+    fn stop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if self.animated {
+            eprint!("\r\x1b[2K");
+            let _ = io::stderr().flush();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.stop();
+            warn(format!("{} interrupted", self.label));
+        }
+    }
 }

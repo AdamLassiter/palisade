@@ -1,4 +1,10 @@
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 use rusqlite::{Connection, OpenFlags, params};
 
@@ -15,8 +21,10 @@ use crate::{
         Runtime,
         TENANTS,
     },
-    util::{table_name, tenant_name},
+    util::{persist, table_name, tenant_name, transient},
 };
+
+static SQLSEC_LOAD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) fn create_schema(
     cfg: &Config,
@@ -24,13 +32,13 @@ pub(crate) fn create_schema(
     conn: &Connection,
 ) -> AppResult<Labels> {
     if cfg.engine.uses_security() {
-        println!("initialization: loading sqlsec extension");
+        transient("loading sqlsec extension");
         load_sqlsec_on_conn(conn, &runtime.libs.sqlsec)?;
-        println!("initialization: setting admin sqlsec context");
+        transient("setting admin sqlsec context");
         set_admin_context(conn, runtime.use_shim_syntax)?;
     }
 
-    println!("initialization: creating physical tables");
+    transient("creating physical tables");
     let physical_accounts = table_name(cfg.engine, "accounts", ReadSurface::Physical);
     let physical_orders = table_name(cfg.engine, "orders", ReadSurface::Physical);
     let physical_transfers = table_name(cfg.engine, "transfers", ReadSurface::Physical);
@@ -82,13 +90,13 @@ pub(crate) fn create_schema(
     ))?;
 
     if !cfg.engine.uses_security() {
-        println!("initialization: security features disabled for this engine");
+        persist("security disabled for sqlite engine");
         return Ok(Labels {
             tenant_labels: (0..TENANTS).map(|i| i as i64 + 1).collect(),
         });
     }
 
-    println!("initialization: bootstrapping secured metadata");
+    transient("bootstrapping secured metadata");
     bootstrap_security_views(conn, runtime.use_shim_syntax)
 }
 
@@ -104,16 +112,64 @@ pub(crate) fn configure_setup_conn(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-pub(crate) fn configure_worker_conn(conn: &Connection) -> AppResult<()> {
-    conn.busy_timeout(Duration::from_millis(750))?;
-    Ok(())
+pub(crate) fn open_configured_worker_conn(
+    cfg: &Config,
+    leader_db_path: &Path,
+    raft_vfs: Option<&str>,
+    libs: &LibPaths,
+) -> AppResult<Connection> {
+    const MAX_ATTEMPTS: usize = 8;
+    let mut last_err = None;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match (|| -> AppResult<Connection> {
+            let conn = open_worker_conn(cfg, leader_db_path, raft_vfs)?;
+            conn.busy_timeout(Duration::from_secs(5))?;
+
+            if cfg.engine.uses_security() {
+                let _guard = SQLSEC_LOAD_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .map_err(|_| "sqlsec load lock poisoned")?;
+                load_sqlsec_on_conn(&conn, &libs.sqlsec)?;
+            }
+
+            Ok(conn)
+        })() {
+            Ok(conn) => return Ok(conn),
+            Err(err) if is_lock_or_busy(&err.to_string()) && attempt < MAX_ATTEMPTS => {
+                last_err = Some(err);
+                thread::sleep(Duration::from_millis(25 * attempt as u64));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "failed to open/configure worker connection after attempt {attempt}/{MAX_ATTEMPTS}: {err}"
+                )
+                .into());
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to open/configure worker connection after {MAX_ATTEMPTS} attempts: {}",
+        last_err
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )
+    .into())
+}
+
+pub(crate) fn is_lock_or_busy(msg: &str) -> bool {
+    msg.contains("locked") || msg.contains("busy")
 }
 
 pub(crate) fn load_sqlsec_on_conn(conn: &Connection, sqlsec_path: &Path) -> AppResult<()> {
     unsafe {
         conn.load_extension_enable()?;
-        conn.load_extension(sqlsec_path, None::<&str>)?;
-        conn.load_extension_disable()?;
+        let load_result = conn.load_extension(sqlsec_path, None::<&str>);
+        let disable_result = conn.load_extension_disable();
+        load_result?;
+        disable_result?;
     }
     Ok(())
 }
@@ -129,7 +185,7 @@ pub(crate) fn load_sqlevfs_on_conn(conn: &Connection, sqlevfs_path: &Path) -> Ap
 
 pub(crate) fn open_writer_conn(cfg: &Config, runtime: &Runtime) -> AppResult<Connection> {
     match cfg.engine {
-        Engine::Baseline => Ok(Connection::open(&runtime.leader_db_path)?),
+        Engine::Sqlite => Ok(Connection::open(&runtime.leader_db_path)?),
         Engine::Secure => Ok(Connection::open_with_flags_and_vfs(
             &runtime.leader_db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -138,8 +194,12 @@ pub(crate) fn open_writer_conn(cfg: &Config, runtime: &Runtime) -> AppResult<Con
         Engine::Cluster => Ok(Connection::open_with_flags_and_vfs(
             &runtime.leader_db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-            "evfs_raft_node1",
+            runtime
+                .leader_raft_vfs_name
+                .as_deref()
+                .ok_or("missing leader raft vfs for cluster writer")?,
         )?),
+        Engine::All => Err("cannot open writer connection for engine=all".into()),
     }
 }
 
@@ -149,7 +209,7 @@ pub(crate) fn open_worker_conn(
     raft_vfs: Option<&str>,
 ) -> AppResult<Connection> {
     Ok(match cfg.engine {
-        Engine::Baseline => Connection::open(leader_db_path)?,
+        Engine::Sqlite => Connection::open(leader_db_path)?,
         Engine::Secure => Connection::open_with_flags_and_vfs(
             leader_db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -160,6 +220,7 @@ pub(crate) fn open_worker_conn(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
             raft_vfs.ok_or("missing raft vfs for cluster writer")?,
         )?,
+        Engine::All => return Err("cannot open worker connection for engine=all".into()),
     })
 }
 
@@ -176,13 +237,14 @@ pub(crate) fn open_validation_conn(
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     };
     let conn = match cfg.engine {
-        Engine::Baseline => Connection::open_with_flags(&runtime.leader_db_path, flags)?,
+        Engine::Sqlite => Connection::open_with_flags(&runtime.leader_db_path, flags)?,
         Engine::Secure => {
             Connection::open_with_flags_and_vfs(&runtime.leader_db_path, flags, "evfs")?
         }
         Engine::Cluster => {
             Connection::open_with_flags_and_vfs(&runtime.leader_db_path, flags, "evfs")?
         }
+        Engine::All => return Err("cannot open validation connection for engine=all".into()),
     };
     conn.busy_timeout(Duration::from_millis(750))?;
     Ok(conn)
@@ -206,7 +268,7 @@ pub(crate) fn open_cluster_replica_raft_conn(follower: &NodeInfo) -> AppResult<C
 }
 
 pub(crate) fn open_evfs_control_conn(db_path: &Path, libs: &LibPaths) -> AppResult<Connection> {
-    println!("initialization: EVFS control open {}", db_path.display());
+    transient(format!("opening EVFS control {}", db_path.display()));
     let conn = Connection::open_with_flags_and_vfs(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -258,7 +320,7 @@ fn register_secure_table(
 }
 
 fn bootstrap_security_views(conn: &Connection, use_shim: bool) -> AppResult<Labels> {
-    println!("initialization: applying admin context for secured views");
+    transient("applying admin context for secured views");
     set_admin_context(conn, use_shim)?;
 
     let mut tenant_labels = Vec::with_capacity(TENANTS);
@@ -267,23 +329,20 @@ fn bootstrap_security_views(conn: &Connection, use_shim: bool) -> AppResult<Labe
         let label_id: i64 = conn.query_row("SELECT sec_define_label(?1)", [expr], |r| r.get(0))?;
         tenant_labels.push(label_id);
     }
-    println!(
-        "initialization: defined {} tenant labels",
-        tenant_labels.len()
-    );
+    persist(format!("defined {} tenant labels", tenant_labels.len()));
     let _ops_admin: i64 = conn.query_row(
         "SELECT sec_define_label('(role=admin|role=ops)')",
         [],
         |r| r.get(0),
     )?;
 
-    println!("initialization: registering secured tables");
+    transient("registering secured tables");
     maybe_register_secure_table(conn, use_shim, "accounts", "__sec_accounts", None)?;
     maybe_register_secure_table(conn, use_shim, "orders", "__sec_orders", None)?;
     maybe_register_secure_table(conn, use_shim, "transfers", "__sec_transfers", None)?;
-    println!("initialization: applying column security");
+    transient("applying column security");
     set_column_security(conn, use_shim, "accounts", "secret_note", "role=admin")?;
-    println!("initialization: refreshing secured views");
+    transient("refreshing secured views");
     refresh_views(conn, use_shim)?;
 
     Ok(Labels { tenant_labels })

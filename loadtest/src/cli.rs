@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::types::{AppResult, Config, Engine};
+use crate::types::{AppResult, Config, Engine, SummaryOutput, WorkloadProfile};
 
 pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
     let mut cfg = Config::default();
@@ -22,12 +22,15 @@ pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
             "--release" => cfg.mode = "release".to_string(),
             "--engine" => {
                 i += 1;
-                cfg.engine = match args.get(i).ok_or("missing value for --engine")?.as_str() {
-                    "baseline" => Engine::Baseline,
-                    "secure" => Engine::Secure,
-                    "cluster" => Engine::Cluster,
-                    other => return Err(format!("unknown engine '{other}'").into()),
-                };
+                let value = args.get(i).ok_or("missing value for --engine")?;
+                cfg.engine =
+                    Engine::parse(value).ok_or_else(|| format!("unknown engine '{value}'"))?;
+            }
+            "--workload" | "--profile" => {
+                i += 1;
+                let value = args.get(i).ok_or("missing value for --workload")?;
+                cfg.workload = WorkloadProfile::parse(value)
+                    .ok_or_else(|| format!("unknown workload '{value}'"))?;
             }
             "--duration-secs" => {
                 i += 1;
@@ -58,6 +61,14 @@ pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
             }
             "--validate-only" => cfg.validate_only = true,
             "--keep-artifacts" => cfg.keep_artifacts = true,
+            "--output" => {
+                i += 1;
+                let value = args.get(i).ok_or("missing value for --output")?;
+                cfg.output = Some(
+                    SummaryOutput::parse(value)
+                        .ok_or_else(|| format!("unknown output '{value}'"))?,
+                );
+            }
             other => return Err(format!("unknown option '{other}'").into()),
         }
         i += 1;
@@ -68,11 +79,17 @@ pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
 fn print_help() {
     println!("Usage: loadtest [options]");
     println!("  --debug | --release");
-    println!("  --engine baseline|secure|cluster");
+    println!("  --engine sqlite|secure|cluster|all");
+    println!("    baseline is accepted as a deprecated alias for sqlite");
+    println!(
+        "  --workload balanced|read-heavy|write-heavy|transfer-heavy|scan-heavy|contention|all"
+    );
     println!("  --duration-secs N");
     println!("  --workers N");
     println!("  --seed N");
     println!("  --ramp-secs N");
     println!("  --validate-only");
     println!("  --keep-artifacts");
+    println!("  --output workloads|engines");
+    println!("    controls roll-up orientation when --engine all and --workload all");
 }

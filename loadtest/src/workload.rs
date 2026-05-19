@@ -7,7 +7,7 @@ use std::{
 use rusqlite::{OptionalExtension, params};
 
 use crate::{
-    db::{apply_context, configure_worker_conn, open_worker_conn, refresh_views},
+    db::{is_lock_or_busy, open_configured_worker_conn},
     types::{
         AppResult,
         Config,
@@ -37,24 +37,20 @@ pub(crate) fn run_workers(
         let worker_cfg = cfg.clone();
         let labels = runtime.labels.clone();
         let leader_db_path = runtime.leader_db_path.clone();
-        let raft_vfs = if cfg.engine.uses_cluster() {
-            Some("evfs_raft_node1".to_string())
-        } else {
-            None
-        };
+        let raft_vfs = runtime.leader_raft_vfs_name.clone();
         let worker_oracle = oracle.clone();
         let worker_next_order_id = next_order_id.clone();
         let worker_next_transfer_id = next_transfer_id.clone();
         let worker_next_audit_id = next_audit_id.clone();
-        let use_shim_syntax = runtime.use_shim_syntax;
+        let libs = runtime.libs.clone();
 
         joins.push(thread::spawn(move || -> AppResult<WorkerMetrics> {
-            let spec = worker_spec(worker_id);
+            let spec = worker_spec(worker_cfg.workload, worker_id);
             let mut rng = SimpleRng::new(worker_cfg.seed ^ ((worker_id as u64 + 1) * 0x9E37));
-            let mut conn = open_worker_conn(&worker_cfg, &leader_db_path, raft_vfs.as_deref())?;
-            configure_worker_conn(&conn)?;
-
+            let conn =
+                open_configured_worker_conn(&worker_cfg, &leader_db_path, raft_vfs.as_deref(), &libs)?;
             let mut metrics = WorkerMetrics::default();
+
             let effective_ramp = if worker_cfg.ramp > worker_cfg.duration {
                 Duration::from_secs_f64(worker_cfg.duration.as_secs_f64() / 2.0)
             } else {
@@ -74,18 +70,10 @@ pub(crate) fn run_workers(
             let physical_audit = table_name(worker_cfg.engine, "audit_log", ReadSurface::Physical);
 
             while Instant::now() < end_at {
-                if worker_cfg.engine.uses_security() {
-                    apply_context(&conn, use_shim_syntax, spec.role, spec.tenant)?;
-                    if worker_id % 5 == 0 {
-                        refresh_views(&conn, use_shim_syntax)?;
-                        metrics.refreshes += 1;
-                    }
-                }
-
-                let choice = rng.range(100);
+                let action = WorkAction::choose(worker_cfg.workload, spec.role, &mut rng);
                 let step = (|| -> AppResult<()> {
-                    match spec.role {
-                        Role::User if choice < 30 => {
+                    match action {
+                        WorkAction::PointRead => {
                             let started = Instant::now();
                             let tenant_idx = spec.tenant.expect("user tenant");
                             let account_id = random_account_id(&mut rng, tenant_idx);
@@ -99,7 +87,7 @@ pub(crate) fn run_workers(
                             metrics.point_reads += 1;
                             WorkerMetrics::add_latency(&mut metrics.point_read_ns, started);
                         }
-                        Role::User if choice < 55 => {
+                        WorkAction::RangeRead => {
                             let started = Instant::now();
                             let tenant_idx = spec.tenant.expect("user tenant");
                             let _: i64 = conn.query_row(
@@ -113,9 +101,9 @@ pub(crate) fn run_workers(
                             metrics.range_reads += 1;
                             WorkerMetrics::add_latency(&mut metrics.range_read_ns, started);
                         }
-                        Role::Ops if choice < 65 => {
+                        WorkAction::Transfer => {
                             let started = Instant::now();
-                            let tenant_idx = rng.range(crate::types::TENANTS as u64) as usize;
+                            let tenant_idx = tenant_for_write(&worker_cfg, &mut rng);
                             let from_id = random_account_id(&mut rng, tenant_idx);
                             let mut to_id = random_account_id(&mut rng, tenant_idx);
                             if to_id == from_id {
@@ -199,7 +187,7 @@ pub(crate) fn run_workers(
                             }
                             WorkerMetrics::add_latency(&mut metrics.transfer_ns, started);
                         }
-                        Role::User if choice < 96 => {
+                        WorkAction::CreateOrder => {
                             let started = Instant::now();
                             let tenant_idx = spec.tenant.expect("user tenant");
                             let account_id = random_account_id(&mut rng, tenant_idx);
@@ -246,7 +234,7 @@ pub(crate) fn run_workers(
                             metrics.orders_created += 1;
                             WorkerMetrics::add_latency(&mut metrics.order_create_ns, started);
                         }
-                        Role::User => {
+                        WorkAction::UpdateOrder => {
                             let started = Instant::now();
                             let tenant_idx = spec.tenant.expect("user tenant");
                             let max_order_id =
@@ -295,7 +283,7 @@ pub(crate) fn run_workers(
                             }
                             WorkerMetrics::add_latency(&mut metrics.order_update_ns, started);
                         }
-                        _ => {
+                        WorkAction::AdminScan => {
                             let started = Instant::now();
                             let _: i64 = conn.query_row(
                                 &format!(
@@ -314,11 +302,9 @@ pub(crate) fn run_workers(
 
                 if let Err(err) = step {
                     let msg = err.to_string();
-                    if msg.contains("locked") || msg.contains("busy") {
+                    if is_lock_or_busy(&msg) {
                         metrics.errors += 1;
                         thread::sleep(Duration::from_millis(10));
-                        conn = open_worker_conn(&worker_cfg, &leader_db_path, raft_vfs.as_deref())?;
-                        configure_worker_conn(&conn)?;
                         continue;
                     }
                     return Err(err);
@@ -335,4 +321,120 @@ pub(crate) fn run_workers(
         merged.merge(&worker_metrics);
     }
     Ok(merged)
+}
+
+#[derive(Clone, Copy)]
+enum WorkAction {
+    PointRead,
+    RangeRead,
+    Transfer,
+    CreateOrder,
+    UpdateOrder,
+    AdminScan,
+}
+
+impl WorkAction {
+    fn choose(
+        profile: crate::types::WorkloadProfile,
+        role: Role,
+        rng: &mut SimpleRng,
+    ) -> WorkAction {
+        match role {
+            Role::Admin => WorkAction::AdminScan,
+            Role::Ops => choose_ops_action(profile, rng),
+            Role::User => choose_user_action(profile, rng),
+        }
+    }
+}
+
+fn choose_ops_action(profile: crate::types::WorkloadProfile, rng: &mut SimpleRng) -> WorkAction {
+    let choice = rng.range(100);
+    match profile {
+        crate::types::WorkloadProfile::TransferHeavy
+        | crate::types::WorkloadProfile::Contention => {
+            if choice < 90 {
+                WorkAction::Transfer
+            } else {
+                WorkAction::AdminScan
+            }
+        }
+        crate::types::WorkloadProfile::WriteHeavy => {
+            if choice < 70 {
+                WorkAction::Transfer
+            } else {
+                WorkAction::AdminScan
+            }
+        }
+        crate::types::WorkloadProfile::ReadHeavy => {
+            if choice < 20 {
+                WorkAction::Transfer
+            } else {
+                WorkAction::AdminScan
+            }
+        }
+        crate::types::WorkloadProfile::ScanHeavy => WorkAction::AdminScan,
+        crate::types::WorkloadProfile::All => {
+            choose_ops_action(crate::types::WorkloadProfile::Balanced, rng)
+        }
+        crate::types::WorkloadProfile::Balanced => {
+            if choice < 65 {
+                WorkAction::Transfer
+            } else {
+                WorkAction::AdminScan
+            }
+        }
+    }
+}
+
+fn choose_user_action(profile: crate::types::WorkloadProfile, rng: &mut SimpleRng) -> WorkAction {
+    let choice = rng.range(100);
+    match profile {
+        crate::types::WorkloadProfile::ReadHeavy => match choice {
+            0..=54 => WorkAction::PointRead,
+            55..=89 => WorkAction::RangeRead,
+            90..=97 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::WriteHeavy => match choice {
+            0..=14 => WorkAction::PointRead,
+            15..=24 => WorkAction::RangeRead,
+            25..=74 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::TransferHeavy => match choice {
+            0..=34 => WorkAction::PointRead,
+            35..=59 => WorkAction::RangeRead,
+            60..=89 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::ScanHeavy => match choice {
+            0..=39 => WorkAction::PointRead,
+            40..=79 => WorkAction::RangeRead,
+            80..=94 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::Contention => match choice {
+            0..=9 => WorkAction::PointRead,
+            10..=19 => WorkAction::RangeRead,
+            20..=64 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::Balanced => match choice {
+            0..=29 => WorkAction::PointRead,
+            30..=54 => WorkAction::RangeRead,
+            55..=95 => WorkAction::CreateOrder,
+            _ => WorkAction::UpdateOrder,
+        },
+        crate::types::WorkloadProfile::All => {
+            choose_user_action(crate::types::WorkloadProfile::Balanced, rng)
+        }
+    }
+}
+
+fn tenant_for_write(cfg: &Config, rng: &mut SimpleRng) -> usize {
+    if cfg.workload == crate::types::WorkloadProfile::Contention {
+        0
+    } else {
+        rng.range(crate::types::TENANTS as u64) as usize
+    }
 }

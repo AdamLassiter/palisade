@@ -173,9 +173,20 @@ impl RaftManager {
         Ok(())
     }
 
-    fn add_node(&mut self, node_id: NodeId, rpc_addr: String, wait_secs: u64) -> Result<()> {
-        let Some((_name, leader)) = self.nodes.iter().find(|(_k, v)| v.raft.is_leader()) else {
-            anyhow::bail!("no local raft leader is active in this process");
+    fn add_node(
+        &mut self,
+        db_path: &Path,
+        node_id: NodeId,
+        rpc_addr: String,
+        wait_secs: u64,
+    ) -> Result<()> {
+        let db_path = db_path.to_string_lossy();
+        let Some((_name, leader)) = self
+            .nodes
+            .iter()
+            .find(|(_k, v)| v.raft.is_leader() && v.config.replay_target.db_path == db_path)
+        else {
+            anyhow::bail!("no local raft leader is active for database '{}'", db_path);
         };
 
         let leader = leader.raft.clone();
@@ -204,6 +215,7 @@ impl RaftManager {
             listen_addr: String,
             leader_id: Option<NodeId>,
             is_leader: bool,
+            committed_wal_offset: u64,
             voters: Vec<NodeId>,
             peers: HashMap<NodeId, String>,
             replay: ReplayStats,
@@ -227,6 +239,7 @@ impl RaftManager {
                 listen_addr: managed.config.listen_addr.clone(),
                 leader_id: metrics.current_leader,
                 is_leader: managed.raft.is_leader(),
+                committed_wal_offset: managed.raft.committed_wal_offset(),
                 voters,
                 peers: managed.config.peers.clone(),
                 replay: replay::get_sink(
@@ -746,11 +759,15 @@ pub(crate) extern "C" fn ffi_evfs_raft_add_node(
         };
 
         let res = (|| -> Result<()> {
+            let db = sqlite3_context_db_handle(ctx);
+            let db_path = main_db_path(db).ok_or_else(|| {
+                anyhow::anyhow!("unable to derive main database path for raft membership change")
+            })?;
             let mgr = manager()?;
             let mut guard = mgr
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft manager lock poisoned"))?;
-            guard.add_node(node_id, rpc_addr, wait_seconds)
+            guard.add_node(&db_path, node_id, rpc_addr, wait_seconds)
         })();
 
         match res {

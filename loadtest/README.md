@@ -12,7 +12,7 @@ It exercises:
 ## Usage
 
 ```bash
-../run-loadtest --release --engine cluster --duration-secs 60 --workers 8
+../run-loadtest --release --engine cluster --workload transfer-heavy --duration-secs 60 --workers 8
 ```
 
 From inside `loadtest/`:
@@ -23,11 +23,28 @@ LD_PRELOAD=../sqlshim/target/release/libsqlshim.so \
 target/release/loadtest --engine cluster --duration-secs 60 --workers 8
 ```
 
-## Modes
+## Engines
 
-- `baseline`: plain SQLite
+- `sqlite`: plain SQLite through `rusqlite`, with no `sqlsec`, `sqlevfs`, or `sqlshim`
 - `secure`: SQLite + `sqlsec` + `sqlevfs`
 - `cluster`: SQLite + `sqlsec` + `sqlevfs` Raft, intended to run with `sqlshim`
+- `all`: run every engine and print a roll-up
+
+`baseline` is accepted as a deprecated alias for `sqlite`.
+
+## Workloads
+
+- `balanced`: mixed reads, writes, transfers, and admin scans
+- `read-heavy`: tenant point/range reads with light writes
+- `write-heavy`: order creation/update pressure
+- `transfer-heavy`: multi-row transfer transactions
+- `scan-heavy`: admin aggregate scans
+- `contention`: hot-tenant writes and transfers
+- `all`: run every workload profile and print a roll-up
+
+When both `--engine all` and `--workload all` are used, `--output workloads`
+prints workloads grouped under each engine, and `--output engines` prints engines
+grouped under each workload. The default is `workloads`.
 
 ## What it validates
 

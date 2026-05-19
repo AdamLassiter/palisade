@@ -32,11 +32,20 @@ use crate::{
         SharedOracle,
         TENANTS,
     },
-    util::{account_id_for, ephemeral_addr, evfs_keyring_path, grpc_uri, table_name, tenant_name},
+    util::{
+        account_id_for,
+        ephemeral_addr,
+        evfs_keyring_path,
+        grpc_uri,
+        persist,
+        table_name,
+        tenant_name,
+        transient,
+    },
 };
 
 pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
-    println!("initialization: resolving repo paths and extension libraries");
+    transient("resolving repository paths and extension libraries");
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("loadtest manifest missing parent")?
@@ -61,10 +70,10 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         return Err(format!("missing sqlevfs extension at {}", libs.sqlevfs.display()).into());
     }
     if cfg.engine.uses_security() {
-        println!("initialization: sqlsec -> {}", libs.sqlsec.display());
+        persist(format!("sqlsec {}", libs.sqlsec.display()));
     }
     if cfg.engine.uses_evfs() {
-        println!("initialization: sqlevfs -> {}", libs.sqlevfs.display());
+        persist(format!("sqlevfs {}", libs.sqlevfs.display()));
     }
 
     let (workspace_guard, workspace_path) = if cfg.keep_artifacts {
@@ -80,7 +89,7 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         let path = dir.path().to_path_buf();
         (Some(dir), path)
     };
-    println!("initialization: workspace {}", workspace_path.display());
+    persist(format!("workspace {}", workspace_path.display()));
 
     if cfg.engine.uses_evfs() {
         let path = workspace_path.join("evfs.key");
@@ -88,11 +97,11 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         unsafe {
             env::set_var("EVFS_KEYFILE", &path);
         }
-        println!("initialization: wrote keyfile {}", path.display());
+        persist(format!("evfs keyfile {}", path.display()));
     }
 
     if cfg.engine.uses_evfs() {
-        println!("initialization: registering EVFS bootstrap connection");
+        transient("registering EVFS bootstrap connection");
         prepare_evfs_registration(&libs.sqlevfs)?;
     }
 
@@ -100,25 +109,27 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         .ok()
         .map(|v| v.contains("libsqlshim"))
         .unwrap_or(false);
-    println!(
-        "initialization: sqlshim preload {}",
+    persist(format!(
+        "sqlshim preload {}",
         if use_shim_syntax {
             "detected"
         } else {
             "not detected"
         }
-    );
+    ));
 
     let leader_db_path = workspace_path.join("leader.db");
-    let followers = if cfg.engine.uses_cluster() {
-        println!("initialization: building raft cluster");
-        build_cluster(&libs, &leader_db_path, &workspace_path)?
+    let (leader_raft_vfs_name, followers) = if cfg.engine.uses_cluster() {
+        transient("building raft cluster");
+        let (leader_raft_vfs_name, followers) =
+            build_cluster(&libs, &leader_db_path, &workspace_path)?;
+        (Some(leader_raft_vfs_name), followers)
     } else {
-        Vec::new()
+        (None, Vec::new())
     };
-    println!("initialization: leader db {}", leader_db_path.display());
+    persist(format!("leader db {}", leader_db_path.display()));
     if !followers.is_empty() {
-        println!("initialization: follower count {}", followers.len());
+        persist(format!("followers {}", followers.len()));
     }
 
     let labels = Labels {
@@ -130,6 +141,7 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         _workspace_guard: workspace_guard,
         libs,
         leader_db_path,
+        leader_raft_vfs_name,
         followers,
         labels,
         use_shim_syntax,
@@ -137,10 +149,7 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
 }
 
 fn prepare_evfs_registration(sqlevfs_path: &Path) -> AppResult<()> {
-    println!(
-        "initialization: loading sqlevfs from {}",
-        sqlevfs_path.display()
-    );
+    transient(format!("loading sqlevfs from {}", sqlevfs_path.display()));
     let conn = Connection::open(":memory:")?;
     load_sqlevfs_on_conn(&conn, sqlevfs_path)?;
     Ok(())
@@ -159,7 +168,7 @@ fn sync_cluster_keyrings(runtime: &Runtime) -> AppResult<()> {
     for follower in &runtime.followers {
         fs::copy(&leader_sidecar, evfs_keyring_path(&follower.db_path))?;
     }
-    println!("initialization: mirrored leader keyring sidecar to followers");
+    persist("mirrored leader keyring sidecar to followers");
     Ok(())
 }
 
@@ -167,20 +176,25 @@ fn build_cluster(
     libs: &LibPaths,
     leader_db_path: &Path,
     workspace_path: &Path,
-) -> AppResult<Vec<NodeInfo>> {
-    println!("initialization: allocating raft listener addresses");
+) -> AppResult<(String, Vec<NodeInfo>)> {
+    transient("allocating raft listener addresses");
     let leader_addr = ephemeral_addr()?;
     let follower_2_addr = ephemeral_addr()?;
     let follower_3_addr = ephemeral_addr()?;
     let leader_rpc_addr = grpc_uri(&leader_addr);
     let follower_2_rpc_addr = grpc_uri(&follower_2_addr);
     let follower_3_rpc_addr = grpc_uri(&follower_3_addr);
-    println!("initialization: node 1 listen_addr {leader_addr}");
-    println!("initialization: node 1 rpc_addr {leader_rpc_addr}");
-    println!("initialization: node 2 listen_addr {follower_2_addr}");
-    println!("initialization: node 2 rpc_addr {follower_2_rpc_addr}");
-    println!("initialization: node 3 listen_addr {follower_3_addr}");
-    println!("initialization: node 3 rpc_addr {follower_3_rpc_addr}");
+    let vfs_suffix = raft_vfs_suffix(workspace_path);
+    let leader_raft_vfs_name = format!("evfs_raft_node1_{vfs_suffix}");
+    let follower_2_raft_vfs_name = format!("evfs_raft_node2_{vfs_suffix}");
+    let follower_3_raft_vfs_name = format!("evfs_raft_node3_{vfs_suffix}");
+    persist(format!("raft node 1 {leader_rpc_addr} ({leader_addr})"));
+    persist(format!(
+        "raft node 2 {follower_2_rpc_addr} ({follower_2_addr})"
+    ));
+    persist(format!(
+        "raft node 3 {follower_3_rpc_addr} ({follower_3_addr})"
+    ));
 
     let nodes = vec![
         NodeInfo {
@@ -188,42 +202,47 @@ fn build_cluster(
             db_path: leader_db_path.to_path_buf(),
             listen_addr: leader_addr.clone(),
             rpc_addr: leader_rpc_addr.clone(),
-            raft_vfs_name: "evfs_raft_node1".to_string(),
+            raft_vfs_name: leader_raft_vfs_name.clone(),
         },
         NodeInfo {
             node_id: 2,
             db_path: workspace_path.join("node2.db"),
             listen_addr: follower_2_addr.clone(),
             rpc_addr: follower_2_rpc_addr.clone(),
-            raft_vfs_name: "evfs_raft_node2".to_string(),
+            raft_vfs_name: follower_2_raft_vfs_name,
         },
         NodeInfo {
             node_id: 3,
             db_path: workspace_path.join("node3.db"),
             listen_addr: follower_3_addr.clone(),
             rpc_addr: follower_3_rpc_addr.clone(),
-            raft_vfs_name: "evfs_raft_node3".to_string(),
+            raft_vfs_name: follower_3_raft_vfs_name,
         },
     ];
 
-    println!("initialization: opening leader control connection");
+    transient("opening leader control connection");
     let leader_control = open_evfs_control_conn(leader_db_path, libs)?;
-    println!("initialization: starting raft node 1");
+    transient("starting raft node 1");
     leader_control.query_row::<String, _, _>(
         "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4)",
         params![1_i64, &leader_addr, "{}", &nodes[0].raft_vfs_name],
         |r| r.get(0),
     )?;
-    println!("initialization: waiting for leader election");
-    wait_for_leader(&leader_control, 1, Duration::from_secs(5))?;
-    println!("initialization: node 1 elected leader");
+    transient("waiting for leader election");
+    wait_for_leader(
+        &leader_control,
+        1,
+        &nodes[0].raft_vfs_name,
+        Duration::from_secs(5),
+    )?;
+    persist("raft node 1 elected leader");
 
     for node in nodes.iter().skip(1) {
-        println!(
-            "initialization: opening follower control node={} db={}",
+        transient(format!(
+            "opening follower control node={} db={}",
             node.node_id,
             node.db_path.display()
-        );
+        ));
         let conn = open_evfs_control_conn(&node.db_path, libs)?;
         let peers_json = serde_json::to_string(&HashMap::from([
             (1_u64, leader_rpc_addr.clone()),
@@ -236,7 +255,7 @@ fn build_cluster(
                 },
             ),
         ]))?;
-        println!("initialization: starting follower node {}", node.node_id);
+        transient(format!("starting follower node {}", node.node_id));
         conn.query_row::<String, _, _>(
             "SELECT evfs_raft_init(?1, ?2, ?3, 'evfs', ?4)",
             params![
@@ -250,10 +269,10 @@ fn build_cluster(
     }
 
     for node in nodes.iter().skip(1) {
-        println!(
-            "initialization: adding node {} to membership via {}",
+        transient(format!(
+            "adding node {} to membership via {}",
             node.node_id, node.rpc_addr
-        );
+        ));
         leader_control.query_row::<String, _, _>(
             "SELECT evfs_raft_add_node(?1, ?2, 10)",
             params![node.node_id as i64, &node.rpc_addr],
@@ -261,10 +280,29 @@ fn build_cluster(
         )?;
     }
 
-    println!("initialization: waiting for voter set [1, 2, 3]");
-    wait_for_voters(&leader_control, &[1, 2, 3], Duration::from_secs(10))?;
-    println!("initialization: raft cluster ready");
-    Ok(nodes.into_iter().skip(1).collect())
+    transient("waiting for raft voter set [1, 2, 3]");
+    let raft_vfs_names = nodes
+        .iter()
+        .map(|node| node.raft_vfs_name.as_str())
+        .collect::<Vec<_>>();
+    wait_for_voters(
+        &leader_control,
+        &raft_vfs_names,
+        &[1, 2, 3],
+        Duration::from_secs(10),
+    )?;
+    persist("raft cluster ready");
+    Ok((leader_raft_vfs_name, nodes.into_iter().skip(1).collect()))
+}
+
+fn raft_vfs_suffix(workspace_path: &Path) -> String {
+    workspace_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("runtime")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 pub(crate) fn seed_database(
@@ -274,24 +312,24 @@ pub(crate) fn seed_database(
     next_order_id: &SharedCounter,
     next_audit_id: &SharedCounter,
 ) -> AppResult<u64> {
-    println!("initialization: opening writer connection");
+    transient("opening writer connection");
     let conn = open_writer_conn(cfg, runtime)?;
-    println!("initialization: configuring setup pragmas");
+    transient("configuring setup pragmas");
     configure_setup_conn(&conn)?;
 
-    println!("initialization: creating schema");
+    transient("creating schema");
     let labels = create_schema(cfg, runtime, &conn)?;
     runtime.labels = labels.clone();
-    println!(
-        "initialization: ready with {} tenant labels",
+    transient(format!(
+        "ready with {} tenant labels",
         runtime.labels.tenant_labels.len()
-    );
+    ));
 
     let physical_accounts = table_name(cfg.engine, "accounts", crate::types::ReadSurface::Physical);
     let physical_orders = table_name(cfg.engine, "orders", crate::types::ReadSurface::Physical);
     let physical_audit = table_name(cfg.engine, "audit_log", crate::types::ReadSurface::Physical);
 
-    println!("initialization: inserting seed rows");
+    transient("inserting seed rows");
     let tx = conn.unchecked_transaction()?;
     let seeded_orders = {
         let mut ins_account = tx.prepare(&format!(
@@ -360,23 +398,29 @@ pub(crate) fn seed_database(
         seeded_orders
     };
     tx.commit()?;
-    println!("initialization: seed transaction committed");
+    persist("seed transaction committed");
     if cfg.engine.uses_cluster() {
         sync_cluster_keyrings(runtime)?;
     }
     Ok(seeded_orders)
 }
 
-fn wait_for_leader(conn: &Connection, node_id: u64, timeout: Duration) -> AppResult<()> {
+fn wait_for_leader(
+    conn: &Connection,
+    node_id: u64,
+    raft_vfs_name: &str,
+    timeout: Duration,
+) -> AppResult<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         let status: String = conn.query_row("SELECT evfs_raft_status()", [], |r| r.get(0))?;
         let doc: RaftStatusDoc = serde_json::from_str(&status)?;
-        if doc
-            .nodes
-            .iter()
-            .any(|n| n.node_id == node_id && n.is_leader && n.leader_id == Some(node_id))
-        {
+        if doc.nodes.iter().any(|n| {
+            n.node_id == node_id
+                && n.raft_vfs_name == raft_vfs_name
+                && n.is_leader
+                && n.leader_id == Some(node_id)
+        }) {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -386,15 +430,25 @@ fn wait_for_leader(conn: &Connection, node_id: u64, timeout: Duration) -> AppRes
     }
 }
 
-fn wait_for_voters(conn: &Connection, expected: &[u64], timeout: Duration) -> AppResult<()> {
+fn wait_for_voters(
+    conn: &Connection,
+    raft_vfs_names: &[&str],
+    expected: &[u64],
+    timeout: Duration,
+) -> AppResult<()> {
     let deadline = std::time::Instant::now() + timeout;
     let mut expected_sorted = expected.to_vec();
     expected_sorted.sort_unstable();
     loop {
         let status: String = conn.query_row("SELECT evfs_raft_status()", [], |r| r.get(0))?;
         let doc: RaftStatusDoc = serde_json::from_str(&status)?;
-        if !doc.nodes.is_empty()
-            && doc.nodes.iter().all(|n| {
+        let cluster_nodes = doc
+            .nodes
+            .iter()
+            .filter(|n| raft_vfs_names.contains(&n.raft_vfs_name.as_str()))
+            .collect::<Vec<_>>();
+        if cluster_nodes.len() == raft_vfs_names.len()
+            && cluster_nodes.iter().all(|n| {
                 let mut voters = n.voters.clone();
                 voters.sort_unstable();
                 voters == expected_sorted

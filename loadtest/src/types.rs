@@ -18,26 +18,115 @@ pub(crate) type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Engine {
-    Baseline,
+    Sqlite,
     Secure,
     Cluster,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SummaryOutput {
+    Workloads,
+    Engines,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkloadProfile {
+    Balanced,
+    ReadHeavy,
+    WriteHeavy,
+    TransferHeavy,
+    ScanHeavy,
+    Contention,
+    All,
+}
+
+impl WorkloadProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::ReadHeavy => "read-heavy",
+            Self::WriteHeavy => "write-heavy",
+            Self::TransferHeavy => "transfer-heavy",
+            Self::ScanHeavy => "scan-heavy",
+            Self::Contention => "contention",
+            Self::All => "all",
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Balanced => "mixed reads, writes, transfers, and admin scans",
+            Self::ReadHeavy => "tenant point/range reads with light writes",
+            Self::WriteHeavy => "order creation/update pressure",
+            Self::TransferHeavy => "multi-row transfer transactions",
+            Self::ScanHeavy => "admin aggregate scans",
+            Self::Contention => "hot-tenant writes and transfers",
+            Self::All => "run every workload profile",
+        }
+    }
+
+    pub(crate) fn runnable() -> &'static [Self] {
+        &[
+            Self::Balanced,
+            Self::ReadHeavy,
+            Self::WriteHeavy,
+            Self::TransferHeavy,
+            Self::ScanHeavy,
+            Self::Contention,
+        ]
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "balanced" => Some(Self::Balanced),
+            "read-heavy" | "read_heavy" => Some(Self::ReadHeavy),
+            "write-heavy" | "write_heavy" => Some(Self::WriteHeavy),
+            "transfer-heavy" | "transfer_heavy" => Some(Self::TransferHeavy),
+            "scan-heavy" | "scan_heavy" => Some(Self::ScanHeavy),
+            "contention" => Some(Self::Contention),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for WorkloadProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl Engine {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Baseline => "baseline",
+            Self::Sqlite => "sqlite",
             Self::Secure => "secure",
             Self::Cluster => "cluster",
+            Self::All => "all",
+        }
+    }
+
+    pub(crate) fn runnable() -> &'static [Self] {
+        &[Self::Sqlite, Self::Secure, Self::Cluster]
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sqlite" | "baseline" => Some(Self::Sqlite),
+            "secure" => Some(Self::Secure),
+            "cluster" => Some(Self::Cluster),
+            "all" => Some(Self::All),
+            _ => None,
         }
     }
 
     pub(crate) fn uses_security(self) -> bool {
-        !matches!(self, Self::Baseline)
+        !matches!(self, Self::Sqlite)
     }
 
     pub(crate) fn uses_evfs(self) -> bool {
-        !matches!(self, Self::Baseline)
+        !matches!(self, Self::Sqlite)
     }
 
     pub(crate) fn uses_cluster(self) -> bool {
@@ -51,16 +140,28 @@ impl fmt::Display for Engine {
     }
 }
 
+impl SummaryOutput {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "workloads" | "workload" => Some(Self::Workloads),
+            "engines" | "engine" => Some(Self::Engines),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub(crate) mode: String,
     pub(crate) engine: Engine,
+    pub(crate) workload: WorkloadProfile,
     pub(crate) duration: Duration,
     pub(crate) workers: usize,
     pub(crate) seed: u64,
     pub(crate) ramp: Duration,
     pub(crate) validate_only: bool,
     pub(crate) keep_artifacts: bool,
+    pub(crate) output: Option<SummaryOutput>,
 }
 
 impl Default for Config {
@@ -68,12 +169,14 @@ impl Default for Config {
         Self {
             mode: "debug".to_string(),
             engine: Engine::Cluster,
+            workload: WorkloadProfile::Balanced,
             duration: Duration::from_secs(60),
             workers: 8,
             seed: 0x5EED_5EED_D15C_A11E,
             ramp: Duration::from_secs(5),
             validate_only: false,
             keep_artifacts: false,
+            output: None,
         }
     }
 }
@@ -103,6 +206,7 @@ pub(crate) struct Runtime {
     pub(crate) _workspace_guard: Option<TempDir>,
     pub(crate) libs: LibPaths,
     pub(crate) leader_db_path: PathBuf,
+    pub(crate) leader_raft_vfs_name: Option<String>,
     pub(crate) followers: Vec<NodeInfo>,
     pub(crate) labels: Labels,
     pub(crate) use_shim_syntax: bool,
@@ -243,9 +347,20 @@ pub(crate) struct RaftStatusDoc {
 #[derive(Deserialize)]
 pub(crate) struct RaftNodeStatus {
     pub(crate) node_id: u64,
+    pub(crate) raft_vfs_name: String,
+    #[serde(default)]
+    pub(crate) committed_wal_offset: u64,
     pub(crate) leader_id: Option<u64>,
     pub(crate) is_leader: bool,
     pub(crate) voters: Vec<u64>,
+    #[serde(default)]
+    pub(crate) replay: RaftReplayStatus,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct RaftReplayStatus {
+    #[serde(default)]
+    pub(crate) last_applied_offset: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
