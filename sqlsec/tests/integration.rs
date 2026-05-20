@@ -75,11 +75,11 @@ fn run_test_case(name: &str) -> bool {
     };
 
     // Send to stdin
-    if let Some(stdin) = &mut child.stdin {
-        if let Err(err) = stdin.write_all(script.as_bytes()) {
-            palisade_log::fail(format!("Failed to write to sqlite3 stdin: {}", err));
-            return false;
-        }
+    if let Some(stdin) = &mut child.stdin
+        && let Err(err) = stdin.write_all(script.as_bytes())
+    {
+        palisade_log::fail(format!("Failed to write to sqlite3 stdin: {}", err));
+        return false;
     }
 
     // Capture result
@@ -147,10 +147,10 @@ fn test_cases() -> Vec<String> {
     let mut names = vec![];
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if entry.path().extension().and_then(|s| s.to_str()) == Some("sql") {
-                if let Some(stem) = entry.path().file_stem() {
-                    names.push(stem.to_string_lossy().to_string());
-                }
+            if entry.path().extension().and_then(|s| s.to_str()) == Some("sql")
+                && let Some(stem) = entry.path().file_stem()
+            {
+                names.push(stem.to_string_lossy().to_string());
             }
         }
     }

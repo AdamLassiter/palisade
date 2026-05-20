@@ -242,7 +242,7 @@ mod tests {
         // Create a wrapped DEK with wrong plaintext length
         let short_plaintext = vec![0xAAu8; 16]; // Should be 32
         let nonce = rand_nonce();
-        let cipher = Aes256Gcm::new_from_slice(&vec![0xBBu8; 32]).unwrap();
+        let cipher = Aes256Gcm::new_from_slice(&[0xBBu8; 32]).unwrap();
         let nonce_ref = Nonce::from_slice(&nonce);
         let ciphertext = cipher.encrypt(nonce_ref, short_plaintext.as_ref()).unwrap();
 

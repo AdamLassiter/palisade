@@ -95,7 +95,7 @@ mod tests {
         ctx.clear_attr("role");
 
         assert!(!ctx.has("role", "admin"));
-        assert!(ctx.attrs.get("role").is_none());
+        assert!(!ctx.attrs.contains_key("role"));
     }
 
     #[test]

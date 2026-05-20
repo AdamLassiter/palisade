@@ -20,7 +20,7 @@ jobs:
           # Ensure sqlite3 executable (adjust path if unzip creates a nested dir)
           chmod +x sqlite-tools/sqlite3 || true
           echo "$(pwd)/sqlite-tools" >> "$GITEA_PATH"
-          sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev protobuf-compiler
           echo "Wrote $(pwd)/sqlite-tools to $GITEA_PATH"
 
       - uses: actions/checkout@v4

@@ -221,12 +221,6 @@ mod tests {
             gdk_plaintext_len: Arc<StdMutex<Option<usize>>>,
         }
 
-        impl OutState {
-            fn set_generate_plaintext_len(&self, len: Option<usize>) {
-                *self.gdk_plaintext_len.lock().unwrap() = len;
-            }
-        }
-
         fn write_json_ok(mut stream: TcpStream, body: serde_json::Value) {
             let body = body.to_string();
             let resp = format!(

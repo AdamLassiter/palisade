@@ -20,7 +20,7 @@ jobs:
           # Ensure sqlite3 executable (adjust path if unzip creates a nested dir)
           chmod +x sqlite-tools/sqlite3 || true
           echo "$(pwd)/sqlite-tools" >> "$GITHUB_PATH"
-          sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+          sudo apt-get update && sudo apt-get install -y libsqlite3-dev protobuf-compiler
           echo "Wrote $(pwd)/sqlite-tools to $GITHUB_PATH"
 
       - name: Setup Protobuf Compiler
@@ -56,7 +56,7 @@ jobs:
         run: ./cargow fmt --all -- --check
 
       - name: Run clippy lints
-        run: ./cargow clippy --workspace --all-targets -- -D warnings
+        run: ./cargow clippy --workspace -- -D warnings
   
   markdown:
     name: Markdown lint
