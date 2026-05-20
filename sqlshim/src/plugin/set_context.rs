@@ -1,4 +1,7 @@
-use sqlparser::{parser::{Parser, ParserError}, tokenizer::Token};
+use sqlparser::{
+    parser::{Parser, ParserError},
+    tokenizer::Token,
+};
 
 use crate::{plugin::CustomPlugin, rewriter::escape_sql_string, statement::CustomStatement};
 
@@ -14,7 +17,9 @@ impl CustomPlugin for SetContextPlugin {
         parser.expect_token(&Token::Eq)?;
         let value = parser.parse_literal_string()?;
 
-        Ok(CustomStatement::SetContext(crate::statement::SetContextStmt { key, value }))
+        Ok(CustomStatement::SetContext(
+            crate::statement::SetContextStmt { key, value },
+        ))
     }
 
     fn rewrite(&self, stmt: CustomStatement) -> String {

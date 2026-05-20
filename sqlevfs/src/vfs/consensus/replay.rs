@@ -58,7 +58,9 @@ fn default_reserve_size() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum FollowerWalSyncMode {
+    #[default]
     PerBatch,
     Coalesced,
 }
@@ -71,12 +73,6 @@ pub struct FollowerWalSyncConfig {
     pub max_batches: usize,
     #[serde(default = "default_wal_sync_max_delay_ms")]
     pub max_delay_ms: u64,
-}
-
-impl Default for FollowerWalSyncMode {
-    fn default() -> Self {
-        Self::PerBatch
-    }
 }
 
 impl Default for FollowerWalSyncConfig {
@@ -398,12 +394,11 @@ fn spawn_materializer(
                 &queue_depth,
                 &mut db_file,
                 batch,
-            ) {
-                if let Ok(mut st) = state.lock() {
-                    st.stats.materialize_errors += 1;
-                    st.stats.last_materialize_error = Some(err.to_string());
-                    st.stats.materialize_queue_depth = queue_depth.load(Ordering::Relaxed) as u64;
-                }
+            ) && let Ok(mut st) = state.lock()
+            {
+                st.stats.materialize_errors += 1;
+                st.stats.last_materialize_error = Some(err.to_string());
+                st.stats.materialize_queue_depth = queue_depth.load(Ordering::Relaxed) as u64;
             }
         }
     });

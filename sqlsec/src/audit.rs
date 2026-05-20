@@ -144,10 +144,11 @@ fn audit_event(
         return Ok(0);
     }
 
-    let context_json = config
-        .include_context
-        .then(|| audit_context_raw(db_ptr))
-        .unwrap_or_else(|| "{}".to_string());
+    let context_json = if config.include_context {
+        audit_context_raw(db_ptr)
+    } else {
+        "{}".to_string()
+    };
     let changed_columns_json = if config.include_changed_columns {
         changed_columns_json
     } else {

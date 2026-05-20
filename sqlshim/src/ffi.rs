@@ -54,16 +54,16 @@ pub unsafe extern "C" fn sqlite3_prepare_v2(
     let real = unsafe { resolve_prepare_v2() };
     let sql = sql_from_prepare_args(z_sql, n_byte);
 
-    if let Some(sql) = sql.as_deref() {
-        if let Some(new_sql) = parse_and_rewrite(sql) {
-            if debug() {
-                eprintln!("sqlshim: prepare_v2 rewrite!");
-                eprintln!("  original: {}", sql.trim());
-                eprintln!("  rewritten: {}", new_sql.trim());
-            }
-            if let Ok(csql) = CString::new(new_sql) {
-                return unsafe { real(db, csql.as_ptr(), -1, pp_stmt, pz_tail) };
-            }
+    if let Some(sql) = sql.as_deref()
+        && let Some(new_sql) = parse_and_rewrite(sql)
+    {
+        if debug() {
+            eprintln!("sqlshim: prepare_v2 rewrite!");
+            eprintln!("  original: {}", sql.trim());
+            eprintln!("  rewritten: {}", new_sql.trim());
+        }
+        if let Ok(csql) = CString::new(new_sql) {
+            return unsafe { real(db, csql.as_ptr(), -1, pp_stmt, pz_tail) };
         }
     }
 
@@ -82,16 +82,16 @@ pub unsafe extern "C" fn sqlite3_prepare_v3(
     let real = unsafe { resolve_prepare_v3() };
     let sql = sql_from_prepare_args(z_sql, n_byte);
 
-    if let Some(sql) = sql.as_deref() {
-        if let Some(new_sql) = parse_and_rewrite(sql) {
-            if debug() {
-                eprintln!("sqlshim: prepare_v3 rewrite!");
-                eprintln!("  original: {}", sql.trim());
-                eprintln!("  rewritten: {}", new_sql.trim());
-            }
-            if let Ok(csql) = CString::new(new_sql) {
-                return unsafe { real(db, csql.as_ptr(), -1, prep_flags, pp_stmt, pz_tail) };
-            }
+    if let Some(sql) = sql.as_deref()
+        && let Some(new_sql) = parse_and_rewrite(sql)
+    {
+        if debug() {
+            eprintln!("sqlshim: prepare_v3 rewrite!");
+            eprintln!("  original: {}", sql.trim());
+            eprintln!("  rewritten: {}", new_sql.trim());
+        }
+        if let Ok(csql) = CString::new(new_sql) {
+            return unsafe { real(db, csql.as_ptr(), -1, prep_flags, pp_stmt, pz_tail) };
         }
     }
 

@@ -45,6 +45,12 @@ jobs:
 
       - name: Run tests
         run: ./cargow test
+      
+      - name: Run auxiliary tests
+        run: |
+          ./run-lazytest --perf
+          ./run-loadtest --duration-secs 5 --workers 4 --workload all --engine all --output engines
+          ./run-chaostest --scenario all --duration-secs 5 --workers 4 --keep-artifacts --include-known-gaps
 
       - name: Run formatting check
         run: ./cargow fmt --all -- --check

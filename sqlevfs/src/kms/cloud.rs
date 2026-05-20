@@ -32,6 +32,7 @@ struct GenerateDataKeyRequest<'a> {
 #[derive(Deserialize)]
 struct GenerateDataKeyResponse {
     #[serde(rename = "KeyId")]
+    #[allow(dead_code)]
     key_id: String,
     #[serde(rename = "Plaintext")]
     plaintext: String, // base64

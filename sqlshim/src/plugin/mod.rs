@@ -49,9 +49,7 @@ pub static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(|| {
         Box::new(enable_audit::EnableAuditPlugin),
     ]);
 
-    PluginRegistry {
-        plugins,
-    }
+    PluginRegistry { plugins }
 });
 
 pub struct PluginRegistry {

@@ -4,7 +4,10 @@ use sqlparser::{
 };
 
 use crate::{
-    parser::ParserExt, plugin::CustomPlugin, rewriter::escape_sql_string, statement::{CustomStatement, SetColumnSecurityStmt}
+    parser::ParserExt,
+    plugin::CustomPlugin,
+    rewriter::escape_sql_string,
+    statement::{CustomStatement, SetColumnSecurityStmt},
 };
 
 pub struct SetColumnSecurityPlugin;
