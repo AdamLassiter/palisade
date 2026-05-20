@@ -13,7 +13,7 @@ jobs:
           # - beta
           - nightly
     steps:
-      - name: Setup SQLite
+      - name: Setup SQLite and Protobuf
         run: |
           wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip
           unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools

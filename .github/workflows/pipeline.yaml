@@ -13,7 +13,7 @@ jobs:
           # - beta
           - nightly
     steps:
-      - name: Setup SQLite
+      - name: Setup SQLite and Protobuf
         run: |
           wget https://sqlite.org/2026/sqlite-tools-linux-x64-3510200.zip
           unzip sqlite-tools-linux-x64-3510200.zip -d sqlite-tools
@@ -22,14 +22,6 @@ jobs:
           echo "$(pwd)/sqlite-tools" >> "$GITHUB_PATH"
           sudo apt-get update && sudo apt-get install -y libsqlite3-dev protobuf-compiler
           echo "Wrote $(pwd)/sqlite-tools to $GITHUB_PATH"
-
-      - name: Setup Protobuf Compiler
-        run: |
-          PROTOC_ZIP=protoc-28.0-linux-x86_64.zip
-          curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v28.0/$PROTOC_ZIP
-          unzip $PROTOC_ZIP -d protoc
-          echo "$(pwd)/protoc/bin" >> "$GITHUB_PATH"
-          echo "Wrote $(pwd)/protoc/bin to $GITHUB_PATH"
 
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
