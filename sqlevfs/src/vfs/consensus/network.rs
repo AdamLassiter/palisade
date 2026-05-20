@@ -176,6 +176,16 @@ impl RaftNetwork<RaftConfig> for PeerNetwork {
                     data,
                     page_no,
                 },
+                WalRecord::DbPage {
+                    page_no,
+                    db_size_pages,
+                    data,
+                } => proto::WalRecord {
+                    kind: 4,
+                    wal_offset: db_size_pages as i64,
+                    data,
+                    page_no,
+                },
             }
         }
 

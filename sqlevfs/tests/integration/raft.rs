@@ -45,6 +45,7 @@ async fn test_raft_replication_single_node_applies_committed_frame() -> anyhow::
         },
         None,
         None,
+        None,
     )
     .await?;
 
@@ -86,6 +87,7 @@ async fn test_raft_replication_single_node_commits_in_order() -> anyhow::Result<
             }
             Ok(())
         },
+        None,
         None,
         None,
     )
@@ -134,6 +136,7 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
         },
         None,
         None,
+        None,
     )
     .await?;
 
@@ -160,6 +163,7 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
             }
             Ok(())
         },
+        None,
         None,
         None,
     )
@@ -230,6 +234,7 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
         },
         None,
         None,
+        None,
     )
     .await?;
     wait_until(Duration::from_secs(5), || replica_raft.is_leader()).await?;
@@ -254,6 +259,7 @@ async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow:
             }
             Ok(())
         },
+        None,
         None,
         None,
     )

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -19,7 +20,7 @@ use crate::vfs::consensus::{
     TruncateCallback,
     network::ReplicaNetwork,
     rpc::serve_grpc,
-    wal::{WalBatch, WalLogStore, WalRecord, WalStateMachine, WalStorageInner},
+    wal::{WalBatch, WalRecord, WalStorageInner},
 };
 
 /// Cluster handle shared by every `EvfsFile` in the same process.
@@ -90,6 +91,7 @@ impl RaftHandle {
         apply_fn: impl Fn(WalBatch) -> Result<()> + Send + Sync + 'static,
         truncate_cb: Option<TruncateCallback>,
         grpc_listen: Option<SocketAddr>,
+        storage_path: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         let config = Arc::new(
             Config {
@@ -102,10 +104,10 @@ impl RaftHandle {
             .context("invalid Raft config")?,
         );
 
-        let storage = Arc::new(RwLock::new(WalStorageInner {
-            log_store: WalLogStore::default(),
-            state_machine: WalStateMachine::new(apply_fn),
-        }));
+        let storage = Arc::new(RwLock::new(
+            WalStorageInner::new(apply_fn, storage_path).context("failed to open raft storage")?,
+        ));
+        let committed_wal_offset = storage.read().committed_wal_offset();
 
         let (log_store, state_machine) = Adaptor::new(storage);
 
@@ -135,7 +137,7 @@ impl RaftHandle {
             node_id,
             raft,
             runtime_handle: Handle::current(),
-            committed_wal_offset: AtomicU64::new(0),
+            committed_wal_offset: AtomicU64::new(committed_wal_offset),
             truncate_cb,
             stats: RaftHandleStats::default(),
         });
@@ -204,8 +206,10 @@ impl RaftHandle {
             .await
             .context("Raft client_write failed")?;
 
-        self.committed_wal_offset
-            .store(wal_offset as u64, Ordering::Release);
+        if wal_offset > 0 {
+            self.committed_wal_offset
+                .store(wal_offset as u64, Ordering::Release);
+        }
         let micros = started.elapsed().as_micros() as u64;
         self.stats.submit_syncs.fetch_add(1, Ordering::Relaxed);
         self.stats

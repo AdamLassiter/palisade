@@ -57,6 +57,7 @@ use crate::{
 const DEFAULT_VFS_NAME: &str = "evfs";
 const DEFAULT_RAFT_VFS_NAME: &str = "evfs_raft";
 const SIDECAR_EXT: &str = "evfs-raft.json";
+const RAFT_STATE_EXT: &str = "evfs-raft-state.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RaftSqlConfig {
@@ -68,6 +69,8 @@ struct RaftSqlConfig {
     page_size: u32,
     reserve_size: usize,
     replay_target: ReplayTargetConfig,
+    #[serde(default)]
+    storage_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -118,7 +121,10 @@ impl RaftManager {
             .parse()
             .with_context(|| format!("invalid listen addr '{}'", cfg.listen_addr))?;
 
-        let sink = replay::register_sink(cfg.replay_target.clone())
+        let mut replay_target = cfg.replay_target.clone();
+        replay_target.rebuild_on_open =
+            !cfg.peers.is_empty() && cfg.storage_path.as_ref().is_some_and(|path| path.exists());
+        let sink = replay::register_sink(replay_target)
             .context("failed to create/register follower replay sink")?;
         let peers = cfg.peers.clone();
         let sink_for_apply = sink.clone();
@@ -142,6 +148,7 @@ impl RaftManager {
                         .context("follower replay truncate failed")
                 })),
                 Some(listen_addr),
+                cfg.storage_path.clone(),
             )
             .await
         });
@@ -291,6 +298,7 @@ impl RaftSqlConfig {
             && self.replay_target.wal_path == other.replay_target.wal_path
             && self.replay_target.shm_path == other.replay_target.shm_path
             && self.replay_target.page_size == other.replay_target.page_size
+            && self.storage_path == other.storage_path
     }
 }
 
@@ -361,6 +369,24 @@ fn sidecar_path_for_db(db_path: &Path) -> Option<PathBuf> {
     Some(db_path.with_extension(SIDECAR_EXT))
 }
 
+fn raft_state_path_for_db(db_path: &Path, node_id: NodeId) -> Option<PathBuf> {
+    if db_path.as_os_str().is_empty() {
+        return None;
+    }
+    let s = db_path.to_string_lossy();
+    if s == ":memory:" || s.starts_with("file::memory:") {
+        return None;
+    }
+    let mut path = db_path.with_extension(RAFT_STATE_EXT);
+    path.set_file_name(format!(
+        "{}.node{}.{}",
+        db_path.file_stem().and_then(|s| s.to_str()).unwrap_or("db"),
+        node_id,
+        RAFT_STATE_EXT
+    ));
+    Some(path)
+}
+
 fn derive_replay_target(
     raft_vfs_name: &str,
     node_id: NodeId,
@@ -379,7 +405,9 @@ fn derive_replay_target(
         shm_path: format!("{db}-shm"),
         db_path: db,
         page_size,
+        reserve_size: 48,
         follower_wal_sync: FollowerWalSyncConfig::default(),
+        rebuild_on_open: false,
     })
 }
 
@@ -694,15 +722,13 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
                 RaftInitOptions::default()
             };
 
-            let mut replay_target = {
-                let db = sqlite3_context_db_handle(ctx);
-                let db_path = main_db_path(db).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "unable to derive main database path for replay target; open a file-backed DB first"
-                    )
-                })?;
-                derive_replay_target(&raft_vfs_name, node_id, &db_path, 4096)?
-            };
+            let db = sqlite3_context_db_handle(ctx);
+            let db_path = main_db_path(db).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unable to derive main database path for replay target; open a file-backed DB first"
+                )
+            })?;
+            let mut replay_target = derive_replay_target(&raft_vfs_name, node_id, &db_path, 4096)?;
             replay_target.follower_wal_sync = options.follower_wal_sync;
 
             let cfg = RaftSqlConfig {
@@ -714,11 +740,11 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
                 page_size: 4096,
                 reserve_size: 48,
                 replay_target,
+                storage_path: raft_state_path_for_db(&db_path, node_id),
             };
 
             start_with_config(cfg.clone())?;
 
-            let db = sqlite3_context_db_handle(ctx);
             if !db.is_null() {
                 persist_config_in_db(db, &cfg)?;
                 if let Some(path) = main_db_path(db).and_then(|p| sidecar_path_for_db(&p)) {

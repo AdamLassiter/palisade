@@ -44,8 +44,16 @@ pub struct ReplayTargetConfig {
     pub wal_path: String,
     pub shm_path: String,
     pub page_size: u32,
+    #[serde(default = "default_reserve_size")]
+    pub reserve_size: usize,
     #[serde(default)]
     pub follower_wal_sync: FollowerWalSyncConfig,
+    #[serde(default, skip)]
+    pub rebuild_on_open: bool,
+}
+
+fn default_reserve_size() -> usize {
+    48
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -136,6 +144,7 @@ pub struct ReplayStats {
 struct ReplayState {
     stats: ReplayStats,
     frame_size: i64,
+    pending_pages: Vec<MaterializePage>,
 }
 
 struct VfsWalFile {
@@ -210,6 +219,42 @@ impl VfsWalFile {
             anyhow::bail!("sqlite xWrite failed at offset {offset}: rc={rc}");
         }
         Ok(())
+    }
+
+    fn read_at(&mut self, offset: i64, data: &mut [u8]) -> Result<()> {
+        // SAFETY: file handle is valid after successful xOpen.
+        let methods = unsafe { (*self.file).pMethods };
+        anyhow::ensure!(!methods.is_null(), "sqlite file has null pMethods");
+
+        // SAFETY: xRead fills the caller-provided buffer with explicit length.
+        let rc = unsafe {
+            ((*methods).xRead.expect("sqlite file missing xRead"))(
+                self.file,
+                data.as_mut_ptr() as *mut c_void,
+                data.len() as c_int,
+                offset,
+            )
+        };
+        if rc != SQLITE_OK {
+            anyhow::bail!("sqlite xRead failed at offset {offset}: rc={rc}");
+        }
+        Ok(())
+    }
+
+    fn file_size(&mut self) -> Result<i64> {
+        // SAFETY: file handle is valid after successful xOpen.
+        let methods = unsafe { (*self.file).pMethods };
+        anyhow::ensure!(!methods.is_null(), "sqlite file has null pMethods");
+
+        let mut size = 0_i64;
+        // SAFETY: xFileSize writes an i64 size through the provided pointer.
+        let rc = unsafe {
+            ((*methods).xFileSize.expect("sqlite file missing xFileSize"))(self.file, &mut size)
+        };
+        if rc != SQLITE_OK {
+            anyhow::bail!("sqlite xFileSize failed: rc={rc}");
+        }
+        Ok(size)
     }
 
     fn truncate(&mut self, len: i64) -> Result<()> {
@@ -302,6 +347,7 @@ struct MaterializePage {
 #[derive(Debug)]
 struct MaterializeBatch {
     target_offset: i64,
+    db_size_pages: Option<u32>,
     pages: Vec<MaterializePage>,
 }
 
@@ -469,8 +515,19 @@ fn materialize_batch(
 
     for page in &batch.pages {
         let page_offset = (page.page_no as i64 - 1) * target.page_size as i64;
+        let mut page_data;
+        let data = if page.page_no == 1
+            && target.reserve_size <= u8::MAX as usize
+            && page.data.len() >= 21
+        {
+            page_data = page.data.clone();
+            page_data[20] = target.reserve_size as u8;
+            page_data.as_slice()
+        } else {
+            page.data.as_slice()
+        };
         let write_started = Instant::now();
-        db_file.write_at(page_offset, &page.data).with_context(|| {
+        db_file.write_at(page_offset, data).with_context(|| {
             format!(
                 "failed to materialize DB page {} at offset {page_offset}",
                 page.page_no
@@ -480,6 +537,12 @@ fn materialize_batch(
     }
 
     if !batch.pages.is_empty() {
+        if let Some(db_size_pages) = batch.db_size_pages {
+            let db_size = db_size_pages as i64 * target.page_size as i64;
+            db_file
+                .truncate(db_size)
+                .with_context(|| format!("failed to truncate follower DB to {db_size} bytes"))?;
+        }
         let sync_started = Instant::now();
         db_file
             .sync()
@@ -518,6 +581,80 @@ fn materialize_batch(
     Ok(())
 }
 
+fn recover_existing_wal(
+    target: &ReplayTargetConfig,
+    wal_file: &Arc<Mutex<VfsWalFile>>,
+    state: &Arc<Mutex<ReplayState>>,
+    queue_depth: &Arc<AtomicUsize>,
+    db_file: &mut VfsWalFile,
+) -> Result<()> {
+    let frame_size = target.page_size as i64 + 24;
+    let mut wal = wal_file
+        .lock()
+        .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+    let wal_size = wal.file_size().context("failed to stat follower WAL")?;
+    if wal_size < 32 {
+        return Ok(());
+    }
+
+    let mut header = [0u8; 32];
+    wal.read_at(0, &mut header)
+        .context("failed to read follower WAL header during recovery")?;
+
+    let full_frames = ((wal_size - 32) / frame_size).max(0);
+    let mut pending_pages = Vec::new();
+    let mut committed_pages = Vec::with_capacity(full_frames as usize);
+    let mut last_offset = 0_i64;
+    let mut last_commit_offset = 0_i64;
+    let mut last_db_size_pages = None;
+    for idx in 0..full_frames {
+        let offset = 32 + idx * frame_size;
+        let mut frame = vec![0u8; frame_size as usize];
+        wal.read_at(offset, &mut frame)
+            .with_context(|| format!("failed to read follower WAL frame at offset {offset}"))?;
+        let page_no = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
+        if page_no == 0 {
+            break;
+        }
+        pending_pages.push(MaterializePage {
+            page_no,
+            data: frame[24..].to_vec(),
+        });
+        last_offset = offset;
+        let db_size = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
+        if db_size != 0 {
+            committed_pages.append(&mut pending_pages);
+            last_commit_offset = offset;
+            last_db_size_pages = Some(db_size);
+        }
+    }
+    drop(wal);
+
+    {
+        let mut st = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("replay state lock poisoned"))?;
+        st.stats.last_applied_offset = last_offset;
+        st.stats.last_wal_synced_offset = last_offset;
+        st.pending_pages = pending_pages;
+    }
+
+    materialize_batch(
+        target,
+        wal_file,
+        state,
+        queue_depth,
+        db_file,
+        MaterializeBatch {
+            target_offset: last_commit_offset,
+            db_size_pages: last_db_size_pages,
+            pages: committed_pages,
+        },
+    )
+    .context("failed to recover follower DB from existing WAL")?;
+    Ok(())
+}
+
 impl FollowerReplaySink {
     pub fn open(target: ReplayTargetConfig) -> Result<Arc<Self>> {
         let wal_file = VfsWalFile::open_with_flags(
@@ -531,7 +668,7 @@ impl FollowerReplaySink {
                 target.wal_path, target.io_vfs_name
             )
         })?;
-        let db_file = VfsWalFile::open_with_flags(
+        let mut db_file = VfsWalFile::open_with_flags(
             &target.db_path,
             &target.io_vfs_name,
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_MAIN_DB,
@@ -545,6 +682,23 @@ impl FollowerReplaySink {
 
         let frame_size = target.page_size as i64 + 24;
         let wal_file = Arc::new(Mutex::new(wal_file));
+        if target.rebuild_on_open {
+            {
+                let mut wal = wal_file
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("replay WAL file lock poisoned"))?;
+                wal.truncate(0)
+                    .context("failed to truncate follower WAL before replay rebuild")?;
+                wal.sync()
+                    .context("failed to sync truncated follower WAL before replay rebuild")?;
+            }
+            db_file
+                .truncate(0)
+                .context("failed to truncate follower DB before replay rebuild")?;
+            db_file
+                .sync()
+                .context("failed to sync truncated follower DB before replay rebuild")?;
+        }
         let follower_wal_sync = target.follower_wal_sync.clone();
         let wal_sync_policy = match follower_wal_sync.mode {
             FollowerWalSyncMode::PerBatch => "per-batch",
@@ -560,10 +714,18 @@ impl FollowerReplaySink {
                 ..ReplayStats::default()
             },
             frame_size,
+            pending_pages: Vec::new(),
         }));
         let (materialize_tx, materialize_rx) =
             mpsc::sync_channel::<MaterializeBatch>(MATERIALIZE_QUEUE_CAPACITY);
         let materialize_queue_depth = Arc::new(AtomicUsize::new(0));
+        recover_existing_wal(
+            &target,
+            &wal_file,
+            &state,
+            &materialize_queue_depth,
+            &mut db_file,
+        )?;
         spawn_materializer(
             target.clone(),
             wal_file.clone(),
@@ -610,6 +772,7 @@ impl FollowerReplaySink {
         let mut batch_wal_sync_micros = 0u64;
         let mut materialize_pages = Vec::new();
         let mut materialize_offset = st.stats.last_applied_offset;
+        let mut materialize_db_size_pages = None;
         let mut sync_offset = st.stats.last_applied_offset;
         let mut materialize_needed = false;
 
@@ -641,6 +804,7 @@ impl FollowerReplaySink {
                         st.stats.applied_records += 1;
                         st.stats.applied_bytes += data.len() as u64;
                         st.stats.last_applied_offset = 0;
+                        st.pending_pages.clear();
                         materialize_offset = 0;
                         sync_offset = 0;
                         materialize_needed = true;
@@ -696,18 +860,51 @@ impl FollowerReplaySink {
                         wal_needs_sync = true;
 
                         let page_bytes = &frame_data[24..];
-                        materialize_pages.push(MaterializePage {
+                        st.pending_pages.push(MaterializePage {
                             page_no: *page_no,
                             data: page_bytes.to_vec(),
                         });
 
                         st.stats.last_applied_offset = wal_offset;
-                        materialize_offset = wal_offset;
                         sync_offset = wal_offset;
-                        materialize_needed = true;
                         st.stats.applied_records += 1;
                         st.stats.applied_frames += 1;
                         st.stats.applied_bytes += frame_data.len() as u64;
+
+                        let db_size = u32::from_be_bytes([
+                            frame_data[4],
+                            frame_data[5],
+                            frame_data[6],
+                            frame_data[7],
+                        ]);
+                        if db_size != 0 {
+                            materialize_pages.append(&mut st.pending_pages);
+                            materialize_offset = wal_offset;
+                            materialize_db_size_pages = Some(db_size);
+                            materialize_needed = true;
+                        }
+                    }
+                    WalRecord::DbPage {
+                        page_no,
+                        db_size_pages,
+                        data,
+                    } => {
+                        if data.len() != self.target.page_size as usize {
+                            st.stats.replay_errors += 1;
+                            anyhow::bail!(
+                                "invalid DB page size: got={}, expected={}",
+                                data.len(),
+                                self.target.page_size
+                            );
+                        }
+                        materialize_pages.push(MaterializePage {
+                            page_no: *page_no,
+                            data: data.clone(),
+                        });
+                        materialize_db_size_pages = Some(*db_size_pages);
+                        materialize_needed = true;
+                        st.stats.applied_records += 1;
+                        st.stats.applied_bytes += data.len() as u64;
                     }
                 }
             }
@@ -732,6 +929,7 @@ impl FollowerReplaySink {
         if materialize_needed {
             let materialize_batch = MaterializeBatch {
                 target_offset: materialize_offset,
+                db_size_pages: materialize_db_size_pages,
                 pages: materialize_pages,
             };
             self.materialize_queue_depth.fetch_add(1, Ordering::Relaxed);
@@ -812,6 +1010,7 @@ impl FollowerReplaySink {
         };
         st.stats.last_wal_synced_offset = st.stats.last_applied_offset;
         st.stats.last_materialized_offset = st.stats.last_applied_offset;
+        st.pending_pages.clear();
         if let Ok(mut sync_state) = self.wal_sync_state.state.lock() {
             sync_state.pending_batches = 0;
             sync_state.pending_offset = -1;
@@ -944,7 +1143,9 @@ mod tests {
             wal_path: format!("{}-wal", db.to_string_lossy()),
             shm_path: format!("{}-shm", db.to_string_lossy()),
             page_size: 4096,
+            reserve_size: 48,
             follower_wal_sync: FollowerWalSyncConfig::default(),
+            rebuild_on_open: false,
         }
     }
 
@@ -960,6 +1161,13 @@ mod tests {
             max_delay_ms,
         };
         target
+    }
+
+    fn commit_frame(page_no: u32) -> Vec<u8> {
+        let mut frame = vec![0u8; 4096 + 24];
+        frame[0..4].copy_from_slice(&page_no.to_be_bytes());
+        frame[4..8].copy_from_slice(&1u32.to_be_bytes());
+        frame
     }
 
     fn wait_for_materialized(sink: &FollowerReplaySink, offset: i64) {
@@ -1002,7 +1210,7 @@ mod tests {
         let frame = WalRecord::Frame {
             wal_offset: 32,
             page_no: 1,
-            data: vec![0u8; 4096 + 24],
+            data: commit_frame(1),
         };
 
         sink.apply_record(&header).expect("apply header");
@@ -1013,7 +1221,7 @@ mod tests {
             .apply_record(&WalRecord::Frame {
                 wal_offset: 32 + 2 * (4096 + 24) as i64,
                 page_no: 2,
-                data: vec![0u8; 4096 + 24],
+                data: commit_frame(2),
             })
             .expect_err("out-of-order should fail");
         assert!(err.to_string().contains("out-of-order"));
@@ -1048,8 +1256,7 @@ mod tests {
         let header = WalRecord::Header {
             data: (0..32u8).collect(),
         };
-        let mut frame = vec![0u8; 4096 + 24];
-        frame[0..4].copy_from_slice(&3u32.to_be_bytes());
+        let frame = commit_frame(3);
         let frame_record = WalRecord::Frame {
             wal_offset: 32,
             page_no: 3,
@@ -1066,6 +1273,41 @@ mod tests {
     }
 
     #[test]
+    fn replay_reopen_recovers_materialization_from_existing_wal() {
+        if !sqlite_api_is_available() {
+            eprintln!("skipping replay test: sqlite extension API is unavailable");
+            return;
+        }
+        let tmp = TempDir::new().expect("tmp dir");
+        {
+            let sink = FollowerReplaySink::open(target(&tmp)).expect("open sink");
+            let mut frame = vec![0u8; 4096 + 24];
+            frame[0..4].copy_from_slice(&3u32.to_be_bytes());
+            frame[4..8].copy_from_slice(&1u32.to_be_bytes());
+            frame[24..].fill(0x5A);
+            sink.apply_batch(&WalBatch::new(vec![
+                WalRecord::Header { data: vec![0; 32] },
+                WalRecord::Frame {
+                    wal_offset: 32,
+                    page_no: 3,
+                    data: frame,
+                },
+            ]))
+            .expect("apply batch");
+            wait_for_materialized(&sink, 32);
+        }
+
+        let reopened = FollowerReplaySink::open(target(&tmp)).expect("reopen sink");
+        let stats = reopened.stats();
+        assert_eq!(stats.last_applied_offset, 32);
+        assert_eq!(stats.last_wal_synced_offset, 32);
+        assert_eq!(stats.last_materialized_offset, 32);
+
+        let db = std::fs::read(tmp.path().join("follower.db")).expect("read db");
+        assert_eq!(&db[2 * 4096..2 * 4096 + 16], &[0x5A; 16]);
+    }
+
+    #[test]
     fn replay_batch_syncs_once_and_updates_stats() {
         if !sqlite_api_is_available() {
             eprintln!("skipping replay test: sqlite extension API is unavailable");
@@ -1076,10 +1318,9 @@ mod tests {
         let header = WalRecord::Header {
             data: vec![0xAA; 32],
         };
-        let mut frame1 = vec![0u8; 4096 + 24];
-        frame1[0..4].copy_from_slice(&1u32.to_be_bytes());
-        let mut frame2 = vec![0u8; 4096 + 24];
-        frame2[0..4].copy_from_slice(&2u32.to_be_bytes());
+        let mut frame1 = commit_frame(1);
+        frame1[4..8].copy_from_slice(&0u32.to_be_bytes());
+        let frame2 = commit_frame(2);
 
         sink.apply_batch(&WalBatch::new(vec![
             header,
@@ -1124,7 +1365,7 @@ mod tests {
         .expect("apply header");
         assert_eq!(sink.stats().last_applied_offset, 0);
         assert_eq!(sink.stats().last_wal_synced_offset, -1);
-        let frame = vec![0u8; 4096 + 24];
+        let frame = commit_frame(1);
         sink.apply_record(&WalRecord::Frame {
             wal_offset: 32,
             page_no: 1,
@@ -1171,17 +1412,17 @@ mod tests {
             data: vec![0u8; 32],
         })
         .expect("apply header");
-        let frame = vec![0u8; 4096 + 24];
+        let frame = commit_frame(1);
         sink.apply_record(&WalRecord::Frame {
             wal_offset: 32,
             page_no: 1,
-            data: frame.clone(),
+            data: frame,
         })
         .expect("apply first");
         sink.apply_record(&WalRecord::Frame {
             wal_offset: 32 + (4096 + 24) as i64,
             page_no: 2,
-            data: frame,
+            data: commit_frame(2),
         })
         .expect("apply second");
         wait_for_materialized(&sink, 32 + (4096 + 24) as i64);

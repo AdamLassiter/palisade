@@ -119,6 +119,12 @@ impl RaftService for RaftGrpcService {
                     page_no: record.page_no,
                     data: record.data,
                 })
+            } else if record.kind == 4 {
+                Ok(WalRecord::DbPage {
+                    page_no: record.page_no,
+                    db_size_pages: record.wal_offset.max(0) as u32,
+                    data: record.data,
+                })
             } else {
                 Err(Box::new(Status::invalid_argument(format!(
                     "append_entries: unexpected WAL record kind {} in normal entry",

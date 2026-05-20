@@ -163,7 +163,7 @@ impl ClusterSupervisor {
         workers: usize,
         seed: u64,
     ) -> AppResult<()> {
-        let leader = self.current_leader().unwrap_or(1);
+        let leader = self.current_leader().ok_or("no current Raft leader")?;
         self.request(
             leader,
             ChildRequest::RunWorkload {
@@ -190,13 +190,16 @@ impl ClusterSupervisor {
     }
 
     pub(crate) fn convergence_diagnostics(&mut self) -> AppResult<String> {
-        let leader_status = self.status_from(1)?;
-        let leader_offset = leader_status
-            .nodes
-            .iter()
-            .find(|node| node.is_leader)
-            .map(|node| node.committed_wal_offset as i64)
-            .unwrap_or(-1);
+        let leader_offset = if let Some(leader) = self.current_leader() {
+            self.status_from(leader)?
+                .nodes
+                .iter()
+                .find(|node| node.is_leader)
+                .map(|node| node.committed_wal_offset as i64)
+                .unwrap_or(-1)
+        } else {
+            -1
+        };
         let mut parts = vec![format!("leader_offset={leader_offset}")];
         let node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
         for node_id in node_ids {
@@ -218,7 +221,10 @@ impl ClusterSupervisor {
     }
 
     fn replicas_converged(&mut self) -> AppResult<bool> {
-        let status = self.status_from(1)?;
+        let Some(current_leader) = self.current_leader() else {
+            return Ok(false);
+        };
+        let status = self.status_from(current_leader)?;
         let Some(leader) = status.nodes.iter().find(|node| node.is_leader) else {
             return Ok(false);
         };
@@ -277,6 +283,19 @@ impl ClusterSupervisor {
         None
     }
 
+    pub(crate) fn wait_leader(&mut self, timeout: Duration) -> AppResult<u64> {
+        let started = Instant::now();
+        loop {
+            if let Some(leader) = self.current_leader() {
+                return Ok(leader);
+            }
+            if started.elapsed() > timeout {
+                return Err("timed out waiting for Raft leader".into());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn status_from(&mut self, node_id: u64) -> AppResult<RaftStatusDoc> {
         let response = self.request(node_id, ChildRequest::Status)?;
         let value = response.result.ok_or("status response missing result")?;
@@ -284,9 +303,11 @@ impl ClusterSupervisor {
     }
 
     pub(crate) fn validate_all(&mut self) -> AppResult<()> {
-        self.request(1, ChildRequest::ValidateLocal)?;
-        for node_id in [2_u64, 3] {
-            if self.nodes.contains_key(&node_id) {
+        let leader = self.current_leader().ok_or("no current Raft leader")?;
+        self.request(leader, ChildRequest::ValidateLocal)?;
+        let node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
+        for node_id in node_ids {
+            if node_id != leader {
                 self.request(node_id, ChildRequest::ValidateLocal)?;
                 self.request(node_id, ChildRequest::ProbeFollowerWrite)?;
             }

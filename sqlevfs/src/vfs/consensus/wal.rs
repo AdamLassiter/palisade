@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, io::Cursor, sync::Arc};
+use std::{collections::BTreeMap, fs, io::Cursor, path::PathBuf, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use openraft::{
     BasicNode,
     Entry,
@@ -31,6 +31,12 @@ pub enum WalRecord {
         page_no: u32,
         data: Vec<u8>,
     },
+    /// A direct main-database page write outside the SQLite WAL stream.
+    DbPage {
+        page_no: u32,
+        db_size_pages: u32,
+        data: Vec<u8>,
+    },
 }
 
 impl WalRecord {
@@ -38,11 +44,16 @@ impl WalRecord {
         match self {
             Self::Header { .. } => 0,
             Self::Frame { wal_offset, .. } => *wal_offset,
+            Self::DbPage { .. } => 0,
         }
     }
 
     pub fn is_frame(&self) -> bool {
         matches!(self, Self::Frame { .. })
+    }
+
+    pub fn is_db_page(&self) -> bool {
+        matches!(self, Self::DbPage { .. })
     }
 }
 
@@ -69,6 +80,13 @@ impl WalBatch {
         self.records
             .iter()
             .filter(|record| record.is_frame())
+            .count()
+    }
+
+    pub fn db_page_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.is_db_page())
             .count()
     }
 
@@ -139,6 +157,21 @@ impl WalFileState {
 
     pub fn drain_for_sync(&mut self) -> Vec<WalRecord> {
         std::mem::take(&mut self.queued)
+    }
+
+    pub fn push_db_page(&mut self, page_no: u32, db_size_pages: u32, data: Vec<u8>) {
+        let replacement = WalRecord::DbPage {
+            page_no,
+            db_size_pages,
+            data,
+        };
+        if let Some(existing) = self.queued.iter_mut().find(|record| {
+            matches!(record, WalRecord::DbPage { page_no: existing_page, .. } if *existing_page == page_no)
+        }) {
+            *existing = replacement;
+        } else {
+            self.queued.push(replacement);
+        }
     }
 
     fn extract_complete_records(&mut self) {
@@ -217,10 +250,11 @@ pub struct WalLogStore {
     meta: RwLock<LogStoreMeta>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct LogStoreMeta {
     last_purged_log_id: Option<LogId<NodeId>>,
     vote: Option<Vote<NodeId>>,
+    committed: Option<LogId<NodeId>>,
 }
 
 // -- In-memory state machine ------------------------------------------
@@ -244,6 +278,8 @@ pub struct WalStateMachine {
     snapshot_meta: Option<SnapshotMeta<NodeId, BasicNode>>,
     /// Callback into the VFS layer: materialize a committed WAL record locally.
     apply_fn: ApplyFn,
+    /// Highest WAL byte offset applied into the state machine.
+    committed_wal_offset: u64,
 }
 
 impl WalStateMachine {
@@ -254,7 +290,126 @@ impl WalStateMachine {
             snapshot: None,
             snapshot_meta: None,
             apply_fn: Arc::new(apply_fn),
+            committed_wal_offset: 0,
         }
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+struct DurableWalStorage {
+    log: BTreeMap<u64, Entry<RaftConfig>>,
+    meta: LogStoreMeta,
+    last_applied: Option<LogId<NodeId>>,
+    last_membership: StoredMembership<NodeId, BasicNode>,
+    snapshot: Option<Vec<u8>>,
+    snapshot_meta: Option<SnapshotMeta<NodeId, BasicNode>>,
+    committed_wal_offset: u64,
+}
+
+impl DurableWalStorage {
+    fn from_inner(inner: &WalStorageInner) -> Self {
+        Self {
+            log: inner.log_store.log.clone(),
+            meta: inner.log_store.meta.read().clone(),
+            last_applied: inner.state_machine.last_applied,
+            last_membership: inner.state_machine.last_membership.clone(),
+            snapshot: inner.state_machine.snapshot.clone(),
+            snapshot_meta: inner.state_machine.snapshot_meta.clone(),
+            committed_wal_offset: inner.state_machine.committed_wal_offset,
+        }
+    }
+}
+
+fn storage_io(err: impl std::fmt::Display) -> StorageError<NodeId> {
+    StorageError::IO {
+        source: openraft::StorageIOError::write_state_machine(&std::io::Error::other(
+            err.to_string(),
+        )),
+    }
+}
+
+impl WalStorageInner {
+    pub fn new(
+        apply_fn: impl Fn(WalBatch) -> Result<()> + Send + Sync + 'static,
+        storage_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        let apply_fn = Arc::new(apply_fn) as ApplyFn;
+        let inner = if let Some(path) = storage_path.as_ref().filter(|p| p.exists()) {
+            let data = fs::read(path)
+                .with_context(|| format!("failed to read raft storage '{}'", path.display()))?;
+            let durable: DurableWalStorage = serde_json::from_slice(&data)
+                .with_context(|| format!("failed to decode raft storage '{}'", path.display()))?;
+            for entry in durable.log.values() {
+                if let EntryPayload::Normal(batch) = &entry.payload {
+                    apply_fn(batch.clone()).with_context(|| {
+                        format!(
+                            "failed to recover raft log entry {} from '{}'",
+                            entry.log_id.index,
+                            path.display()
+                        )
+                    })?;
+                }
+            }
+            Self {
+                log_store: WalLogStore {
+                    log: durable.log,
+                    meta: RwLock::new(durable.meta),
+                },
+                state_machine: WalStateMachine {
+                    last_applied: durable.last_applied,
+                    last_membership: durable.last_membership,
+                    snapshot: durable.snapshot,
+                    snapshot_meta: durable.snapshot_meta,
+                    apply_fn: apply_fn.clone(),
+                    committed_wal_offset: durable.committed_wal_offset,
+                },
+                storage_path: storage_path.clone(),
+            }
+        } else {
+            Self {
+                log_store: WalLogStore::default(),
+                state_machine: WalStateMachine {
+                    last_applied: None,
+                    last_membership: StoredMembership::default(),
+                    snapshot: None,
+                    snapshot_meta: None,
+                    apply_fn: apply_fn.clone(),
+                    committed_wal_offset: 0,
+                },
+                storage_path: storage_path.clone(),
+            }
+        };
+        inner
+            .persist()
+            .context("failed to initialize raft storage")?;
+        Ok(inner)
+    }
+
+    pub fn committed_wal_offset(&self) -> u64 {
+        self.state_machine.committed_wal_offset
+    }
+
+    fn persist(&self) -> Result<()> {
+        let Some(path) = &self.storage_path else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create raft storage dir '{}'", parent.display())
+            })?;
+        }
+        let durable = DurableWalStorage::from_inner(self);
+        let tmp = path.with_extension("evfs-raft-state.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(&durable)?)
+            .with_context(|| format!("failed to write raft storage '{}'", tmp.display()))?;
+        fs::rename(&tmp, path).with_context(|| {
+            format!(
+                "failed to replace raft storage '{}' with '{}'",
+                path.display(),
+                tmp.display()
+            )
+        })?;
+        Ok(())
     }
 }
 
@@ -282,17 +437,22 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
 
     async fn save_committed(
         &mut self,
-        _committed: Option<LogId<NodeId>>,
+        committed: Option<LogId<NodeId>>,
     ) -> Result<(), StorageError<NodeId>> {
+        let s = self.write();
+        s.log_store.meta.write().committed = committed;
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        Ok(None)
+        Ok(self.read().log_store.meta.read().committed)
     }
 
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
-        self.write().log_store.meta.write().vote = Some(*vote);
+        let s = self.write();
+        s.log_store.meta.write().vote = Some(*vote);
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
@@ -312,6 +472,7 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
         for entry in entries {
             s.log_store.log.insert(entry.log_id.index, entry);
         }
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
@@ -319,10 +480,9 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
         &mut self,
         log_id: LogId<NodeId>,
     ) -> Result<(), StorageError<NodeId>> {
-        self.write()
-            .log_store
-            .log
-            .retain(|&idx, _| idx < log_id.index);
+        let mut s = self.write();
+        s.log_store.log.retain(|&idx, _| idx < log_id.index);
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
@@ -330,6 +490,7 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
         let mut s = self.write();
         s.log_store.log.retain(|&idx, _| idx > log_id.index);
         s.log_store.meta.write().last_purged_log_id = Some(log_id);
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
@@ -350,12 +511,15 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
     ) -> Result<Vec<()>, StorageError<NodeId>> {
         let mut results = Vec::new();
         for entry in entries {
-            let mut s = self.write();
-            s.state_machine.last_applied = Some(entry.log_id);
-
             match &entry.payload {
-                EntryPayload::Blank => {}
+                EntryPayload::Blank => {
+                    let mut s = self.write();
+                    s.state_machine.last_applied = Some(entry.log_id);
+                    s.persist().map_err(storage_io)?;
+                }
                 EntryPayload::Normal(batch) => {
+                    let mut s = self.write();
+                    s.state_machine.last_applied = Some(entry.log_id);
                     let apply = s.state_machine.apply_fn.clone();
                     let batch = batch.clone();
                     drop(s);
@@ -372,10 +536,18 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
                             ),
                         });
                     }
+                    let mut s = self.write();
+                    if batch.committed_wal_offset() > 0 {
+                        s.state_machine.committed_wal_offset = batch.committed_wal_offset() as u64;
+                    }
+                    s.persist().map_err(storage_io)?;
                 }
                 EntryPayload::Membership(mem) => {
+                    let mut s = self.write();
+                    s.state_machine.last_applied = Some(entry.log_id);
                     s.state_machine.last_membership =
                         StoredMembership::new(Some(entry.log_id), mem.clone());
+                    s.persist().map_err(storage_io)?;
                 }
             }
             results.push(());
@@ -403,6 +575,7 @@ impl RaftStorage<RaftConfig> for Arc<RwLock<WalStorageInner>> {
         s.state_machine.snapshot_meta = Some(meta.clone());
         s.state_machine.last_applied = meta.last_log_id;
         s.state_machine.last_membership = meta.last_membership.clone();
+        s.persist().map_err(storage_io)?;
         Ok(())
     }
 
@@ -468,4 +641,5 @@ impl RaftSnapshotBuilder<RaftConfig> for Arc<RwLock<WalStorageInner>> {
 pub struct WalStorageInner {
     pub(crate) log_store: WalLogStore,
     pub(crate) state_machine: WalStateMachine,
+    storage_path: Option<PathBuf>,
 }

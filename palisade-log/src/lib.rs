@@ -1,4 +1,7 @@
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::{
+    env,
     io::{self, IsTerminal, Write},
     sync::{
         Arc,
@@ -20,44 +23,184 @@ pub const MAGENTA: &str = "\x1b[35m";
 pub const CYAN: &str = "\x1b[36m";
 pub const RED: &str = "\x1b[31m";
 
-static TRANSIENT_ACTIVE: OnceLock<Mutex<bool>> = OnceLock::new();
+#[derive(Clone, Copy)]
+enum TransientStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Default)]
+struct TransientState {
+    stdout: bool,
+    stderr: bool,
+}
+
+static TRANSIENT_ACTIVE: OnceLock<Mutex<TransientState>> = OnceLock::new();
 
 pub fn style(code: &'static str) -> &'static str {
     if io::stdout().is_terminal() { code } else { "" }
 }
 
-fn transient_state() -> &'static Mutex<bool> {
-    TRANSIENT_ACTIVE.get_or_init(|| Mutex::new(false))
+fn transient_state() -> &'static Mutex<TransientState> {
+    TRANSIENT_ACTIVE.get_or_init(|| Mutex::new(TransientState::default()))
+}
+
+fn stream_is_terminal(stream: TransientStream) -> bool {
+    match stream {
+        TransientStream::Stdout => io::stdout().is_terminal(),
+        TransientStream::Stderr => io::stderr().is_terminal(),
+    }
+}
+
+fn stream_style(stream: TransientStream, code: &'static str) -> &'static str {
+    if stream_is_terminal(stream) { code } else { "" }
+}
+
+fn write_stream(stream: TransientStream, text: &str) {
+    match stream {
+        TransientStream::Stdout => {
+            print!("{text}");
+            let _ = io::stdout().flush();
+        }
+        TransientStream::Stderr => {
+            eprint!("{text}");
+            let _ = io::stderr().flush();
+        }
+    }
+}
+
+fn preferred_transient_stream() -> Option<TransientStream> {
+    if io::stdout().is_terminal() {
+        Some(TransientStream::Stdout)
+    } else if io::stderr().is_terminal() {
+        Some(TransientStream::Stderr)
+    } else {
+        None
+    }
+}
+
+fn terminal_columns(stream: TransientStream) -> usize {
+    if let Ok(columns) = env::var("COLUMNS")
+        && let Ok(columns) = columns.parse::<usize>()
+        && columns > 0
+    {
+        return columns;
+    }
+
+    #[cfg(unix)]
+    {
+        let fd = match stream {
+            TransientStream::Stdout => io::stdout().as_raw_fd(),
+            TransientStream::Stderr => io::stderr().as_raw_fd(),
+        };
+        let mut winsize = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: ioctl only writes to the provided winsize struct for the selected terminal fd.
+        let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut winsize) };
+        if rc == 0 && winsize.ws_col > 0 {
+            return winsize.ws_col as usize;
+        }
+    }
+
+    80
+}
+
+fn transient_width(stream: TransientStream) -> usize {
+    terminal_columns(stream).saturating_sub(1).max(1)
+}
+
+fn char_len(value: &str) -> usize {
+    value.chars().count()
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if char_len(value) <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return value.chars().take(max_chars).collect();
+    }
+
+    let mut out: String = value.chars().take(max_chars - 3).collect();
+    out.push_str("...");
+    out
+}
+
+fn stream_active(active: &mut TransientState, stream: TransientStream) -> &mut bool {
+    match stream {
+        TransientStream::Stdout => &mut active.stdout,
+        TransientStream::Stderr => &mut active.stderr,
+    }
+}
+
+fn clear_stream(active: &mut TransientState, stream: TransientStream) {
+    let active_for_stream = stream_active(active, stream);
+    if *active_for_stream && stream_is_terminal(stream) {
+        write_stream(stream, "\r\x1b[2K\r");
+    }
+    *active_for_stream = false;
 }
 
 pub fn clear_transient() {
     let Ok(mut active) = transient_state().lock() else {
         return;
     };
-    if *active && io::stdout().is_terminal() {
-        print!("\r\x1b[2K");
-        let _ = io::stdout().flush();
-    }
-    *active = false;
+    clear_stream(&mut active, TransientStream::Stdout);
+    clear_stream(&mut active, TransientStream::Stderr);
 }
 
 pub fn transient(msg: impl AsRef<str>) {
-    if !io::stdout().is_terminal() {
+    let Some(stream) = preferred_transient_stream() else {
         return;
-    }
+    };
     let Ok(mut active) = transient_state().lock() else {
         return;
     };
-    print!(
-        "\r\x1b[2K{}·{} {}{}{}",
-        style(DIM),
-        style(RESET),
-        style(DIM),
+    let prefix = "· ";
+    let msg = truncate_chars(
         msg.as_ref(),
-        style(RESET)
+        transient_width(stream).saturating_sub(char_len(prefix)),
     );
-    let _ = io::stdout().flush();
-    *active = true;
+    write_stream(
+        stream,
+        &format!(
+            "\r\x1b[2K\r{}·{} {}{}{}",
+            stream_style(stream, DIM),
+            stream_style(stream, RESET),
+            stream_style(stream, DIM),
+            msg,
+            stream_style(stream, RESET)
+        ),
+    );
+    *stream_active(&mut active, stream) = true;
+}
+
+fn render_spinner_frame(stream: TransientStream, frame: &str, label: &str) {
+    write_stream(
+        stream,
+        &format!(
+            "\r\x1b[2K\r{}{}{} {}{}{}",
+            stream_style(stream, CYAN),
+            frame,
+            stream_style(stream, RESET),
+            stream_style(stream, DIM),
+            label,
+            stream_style(stream, RESET)
+        ),
+    );
+}
+
+fn truncate_spinner_label(stream: TransientStream, frame: &str, label: &str) -> String {
+    truncate_chars(
+        label,
+        transient_width(stream)
+            .saturating_sub(char_len(frame))
+            .saturating_sub(1),
+    )
 }
 
 pub fn persist(msg: impl AsRef<str>) {
@@ -149,34 +292,31 @@ pub struct Spinner {
     done: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     label: String,
-    animated: bool,
 }
 
 impl Spinner {
     pub fn start(label: impl Into<String>) -> Self {
         let label = label.into();
-        let animated = io::stderr().is_terminal();
-        if !io::stdout().is_terminal() || !animated {
+        let stream = preferred_transient_stream();
+        if !io::stdout().is_terminal() {
             phase(&label);
         }
         let done = Arc::new(AtomicBool::new(false));
-        let handle = if animated {
+        let handle = if let Some(stream) = stream {
             let done_for_thread = done.clone();
             let label_for_thread = label.clone();
             Some(thread::spawn(move || {
                 let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                 let mut i = 0usize;
                 while !done_for_thread.load(Ordering::Relaxed) {
-                    eprint!(
-                        "\r{}{}{} {}{}{}",
-                        style(CYAN),
-                        frames[i % frames.len()],
-                        style(RESET),
-                        style(DIM),
-                        label_for_thread,
-                        style(RESET)
-                    );
-                    let _ = io::stderr().flush();
+                    let Ok(mut active) = transient_state().lock() else {
+                        break;
+                    };
+                    let frame = frames[i % frames.len()];
+                    let label = truncate_spinner_label(stream, frame, &label_for_thread);
+                    render_spinner_frame(stream, frame, &label);
+                    *stream_active(&mut active, stream) = true;
+                    drop(active);
                     i += 1;
                     thread::sleep(Duration::from_millis(90));
                 }
@@ -188,7 +328,6 @@ impl Spinner {
             done,
             handle,
             label,
-            animated,
         }
     }
 
@@ -201,10 +340,7 @@ impl Spinner {
         self.done.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
-        }
-        if self.animated {
-            eprint!("\r\x1b[2K");
-            let _ = io::stderr().flush();
+            clear_transient();
         }
     }
 }
@@ -292,7 +428,7 @@ impl Default for TestLogger {
 
 #[cfg(test)]
 mod tests {
-    use super::{left_cell_styled, right_cell_styled};
+    use super::{left_cell_styled, right_cell_styled, truncate_chars};
 
     fn strip_ansi(input: &str) -> String {
         let mut out = String::new();
@@ -326,5 +462,13 @@ mod tests {
         let cell = right_cell_styled("135.19", 10, "\x1b[32m", "\x1b[0m");
         assert!(cell.starts_with("    \x1b[32m"));
         assert_eq!(strip_ansi(&cell), format!("{:>10}", "135.19"));
+    }
+
+    #[test]
+    fn truncation_keeps_transient_output_within_width() {
+        assert_eq!(truncate_chars("running workload", 32), "running workload");
+        assert_eq!(truncate_chars("running workload", 10), "running...");
+        assert_eq!(truncate_chars("running workload", 3), "run");
+        assert_eq!(truncate_chars("running workload", 0), "");
     }
 }

@@ -1,4 +1,10 @@
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -8,6 +14,8 @@ use crate::{
     types::{AppResult, TENANTS},
     util::{SimpleRng, random_account_id, tenant_name},
 };
+
+static SQLSEC_LOAD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) fn open_evfs_control_conn(db_path: &Path, sqlevfs: &Path) -> AppResult<Connection> {
     let loader = Connection::open(":memory:")?;
@@ -31,12 +39,45 @@ pub(crate) fn load_sqlevfs_on_conn(conn: &Connection, sqlevfs: &Path) -> AppResu
 }
 
 pub(crate) fn load_sqlsec_on_conn(conn: &Connection, sqlsec: &Path) -> AppResult<()> {
-    unsafe {
-        conn.load_extension_enable()?;
-        conn.load_extension(sqlsec, None::<&str>)?;
-        conn.load_extension_disable()?;
+    const MAX_ATTEMPTS: usize = 8;
+    let _guard = SQLSEC_LOAD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "sqlsec load lock poisoned")?;
+    let mut last_err = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let result = unsafe {
+            conn.load_extension_enable()?;
+            let load_result = conn.load_extension(sqlsec, None::<&str>);
+            let disable_result = conn.load_extension_disable();
+            load_result?;
+            disable_result?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        };
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if (err.to_string().contains("locked") || err.to_string().contains("busy"))
+                    && attempt < MAX_ATTEMPTS =>
+            {
+                last_err = Some(err);
+                thread::sleep(Duration::from_millis(25 * attempt as u64));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "sqlsec initialization failed after attempt {attempt}/{MAX_ATTEMPTS}: {err}"
+                )
+                .into());
+            }
+        }
     }
-    Ok(())
+    Err(format!(
+        "sqlsec initialization failed after {MAX_ATTEMPTS} attempts: {}",
+        last_err
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )
+    .into())
 }
 
 pub(crate) fn configure_conn(conn: &Connection) -> AppResult<()> {

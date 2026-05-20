@@ -1400,6 +1400,9 @@ dependencies = [
 [[package]]
 name = "palisade-log"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "parking_lot"

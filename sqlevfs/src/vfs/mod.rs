@@ -111,6 +111,25 @@ unsafe fn inner_filesize(inner: *mut sqlite3_file) -> Option<i64> {
     }
 }
 
+unsafe fn queue_direct_db_page(
+    wal_state: *mut Option<WalFileState>,
+    inner: *mut sqlite3_file,
+    page_no: u32,
+    page_start: i64,
+    page_size: i64,
+    page_buf: &[u8],
+) {
+    unsafe {
+        let Some(ws) = (*wal_state).as_mut() else {
+            return;
+        };
+        let current_size = inner_filesize(inner).unwrap_or(0);
+        let db_size = current_size.max(page_start.saturating_add(page_size));
+        let db_size_pages = ((db_size + page_size - 1) / page_size).max(page_no as i64) as u32;
+        ws.push_db_page(page_no, db_size_pages, page_buf.to_vec());
+    }
+}
+
 fn wal_encrypt_frame_in_place(cryptor: &PageCryptor, frame: &mut [u8]) -> anyhow::Result<()> {
     let page_size = cryptor.page_size as usize;
     if frame.len() != WAL_FRAME_HEADER_SIZE + page_size {
@@ -473,9 +492,10 @@ unsafe extern "C" fn evfs_open(
             }
         }
 
-        // WAL state — Some only for WAL file descriptors with Raft enabled.
-        let wal_state: *mut Option<WalFileState> =
-            Box::into_raw(Box::new(if is_wal && global.raft.is_some() {
+        // Replication state — WAL descriptors queue WAL frames, while MAIN
+        // DB descriptors queue direct page writes that occur outside WAL.
+        let wal_state: *mut Option<WalFileState> = Box::into_raw(Box::new(
+            if (is_wal || encrypt_enabled) && global.raft.is_some() {
                 let db_name = if z_name.is_null() {
                     "unknown".to_string()
                 } else {
@@ -484,7 +504,8 @@ unsafe extern "C" fn evfs_open(
                 Some(WalFileState::new(db_name, global.cryptor.page_size))
             } else {
                 None
-            }));
+            },
+        ));
 
         // Raft handle — cloned from global when replication is active.
         let raft_handle: *mut Option<Arc<RaftHandle>> =
@@ -679,17 +700,23 @@ unsafe extern "C" fn evfs_write(
                 return SQLITE_IOERR_WRITE;
             }
 
-            // Buffer for WAL replication before hitting the OS.
-            if let Some(ws) = (*(*efile).wal_state).as_mut() {
-                ws.push(&page_buf, i_ofst);
-            }
-
-            return ((*(*inner).pMethods).xWrite.unwrap())(
+            let rc = ((*(*inner).pMethods).xWrite.unwrap())(
                 inner,
                 page_buf.as_ptr() as *const c_void,
                 i_amt,
                 i_ofst,
             );
+            if rc == SQLITE_OK {
+                queue_direct_db_page(
+                    (*efile).wal_state,
+                    inner,
+                    page_no,
+                    i_ofst,
+                    page_size,
+                    &page_buf,
+                );
+            }
+            return rc;
         }
 
         // Slow path: sub-page or cross-page range write.
@@ -751,11 +778,6 @@ unsafe extern "C" fn evfs_write(
                 return SQLITE_IOERR_WRITE;
             }
 
-            // Buffer WAL frame bytes for replication.
-            if let Some(ws) = (*(*efile).wal_state).as_mut() {
-                ws.push(&page_buf, p_start);
-            }
-
             let rc = ((*(*inner).pMethods).xWrite.unwrap())(
                 inner,
                 page_buf.as_ptr() as *const c_void,
@@ -765,6 +787,14 @@ unsafe extern "C" fn evfs_write(
             if rc != SQLITE_OK {
                 return rc;
             }
+            queue_direct_db_page(
+                (*efile).wal_state,
+                inner,
+                page_no,
+                p_start,
+                page_size,
+                &page_buf,
+            );
         }
         debug_assert_eq!(in_cursor, inp.len());
         SQLITE_OK

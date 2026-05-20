@@ -19,6 +19,7 @@ use crate::{
 pub(crate) struct Supervisor {
     cfg: Config,
     repo_root: PathBuf,
+    workspace_root: PathBuf,
     workspace_path: PathBuf,
     _guard: Option<TempDir>,
     libs: LibPaths,
@@ -72,6 +73,7 @@ impl Supervisor {
         Ok(Self {
             cfg,
             repo_root,
+            workspace_root: workspace_path.clone(),
             workspace_path,
             _guard: guard,
             libs,
@@ -90,6 +92,7 @@ impl Supervisor {
             ),
         );
         for scenario in self.cfg.scenario.runnable(self.cfg.include_known_gaps) {
+            self.prepare_scenario_workspace(scenario)?;
             let report = self.run_one(scenario);
             print_scenario_report(&report);
             self.reports.push(report);
@@ -102,6 +105,22 @@ impl Supervisor {
             .any(|r| matches!(r.status, ScenarioStatus::Fail)))
     }
 
+    fn prepare_scenario_workspace(&mut self, scenario: Scenario) -> AppResult<()> {
+        let path = self.workspace_root.join(scenario.as_str());
+        if path.exists() {
+            fs::remove_dir_all(&path)?;
+        }
+        fs::create_dir_all(&path)?;
+        let keyfile = path.join("evfs.key");
+        fs::write(&keyfile, [0x42_u8; 32])?;
+        unsafe {
+            env::set_var("EVFS_KEYFILE", &keyfile);
+        }
+        self.workspace_path = path;
+        self.nodes = make_node_configs(&self.workspace_path)?;
+        Ok(())
+    }
+
     fn run_one(&self, scenario: Scenario) -> ScenarioReport {
         let started = Instant::now();
         let mut steps = Vec::new();
@@ -109,9 +128,8 @@ impl Supervisor {
             Scenario::FollowerKill => self.scenario_follower_kill(&mut steps),
             Scenario::KeyLoss => self.scenario_key_loss(&mut steps),
             Scenario::SidecarCorrupt => self.scenario_sidecar_corrupt(&mut steps),
-            Scenario::LeaderKill | Scenario::WholeProcessRestart => {
-                self.scenario_known_gap(scenario, &mut steps)
-            }
+            Scenario::LeaderKill => self.scenario_leader_kill(&mut steps),
+            Scenario::WholeProcessRestart => self.scenario_whole_process_restart(&mut steps),
             Scenario::All => unreachable!(),
         };
 
@@ -211,51 +229,51 @@ impl Supervisor {
         Ok(ScenarioStatus::Pass)
     }
 
-    fn scenario_known_gap(
-        &self,
-        scenario: Scenario,
-        steps: &mut Vec<ScenarioStep>,
-    ) -> AppResult<ScenarioStatus> {
-        if !self.cfg.include_known_gaps {
-            steps.push(ScenarioStep::known_gap(
-                "skipped; pass --include-known-gaps to run",
-            ));
-            return Ok(ScenarioStatus::KnownGap);
-        }
-
+    fn scenario_leader_kill(&self, steps: &mut Vec<ScenarioStep>) -> AppResult<ScenarioStatus> {
         let mut cluster = self.start_cluster()?;
         cluster.seed(self.cfg.seed)?;
         cluster.run_workload(Duration::from_secs(1), 1, self.cfg.seed)?;
-        match scenario {
-            Scenario::LeaderKill => {
-                cluster.kill(1)?;
-                steps.push(ScenarioStep::pass("killed leader node 1"));
-                let err = cluster
-                    .run_workload(Duration::from_secs(1), 1, self.cfg.seed ^ 0xDEAD)
-                    .err()
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "surviving node accepted workload unexpectedly".to_string());
-                steps.push(ScenarioStep::known_gap(format!(
-                    "persistent Raft recovery/election not implemented yet: {err}"
-                )));
-            }
-            Scenario::WholeProcessRestart => {
-                cluster.kill_all();
-                steps.push(ScenarioStep::pass("killed all node processes"));
-                let err = cluster
-                    .restart_all()
-                    .and_then(|_| cluster.wait_converged(Duration::from_secs(5)))
-                    .err()
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "cluster restarted unexpectedly".to_string());
-                steps.push(ScenarioStep::known_gap(format!(
-                    "persistent Raft storage not implemented yet: {err}"
-                )));
-            }
-            _ => unreachable!(),
-        }
+        steps.push(ScenarioStep::pass(
+            "seeded database and baseline workload completed",
+        ));
+        cluster.kill(1)?;
+        steps.push(ScenarioStep::pass("killed leader node 1"));
+        cluster.restart(1)?;
+        steps.push(ScenarioStep::pass("restarted leader node 1"));
+        let leader = cluster.wait_leader(Duration::from_secs(15))?;
+        steps.push(ScenarioStep::pass(format!("node {leader} elected leader")));
+        cluster.run_workload(Duration::from_secs(1), 1, self.cfg.seed ^ 0xDEAD)?;
+        steps.push(ScenarioStep::pass("continued writes on new leader"));
+        cluster.wait_converged(Duration::from_secs(15))?;
+        steps.push(ScenarioStep::pass("surviving followers converged"));
+        cluster.validate_all()?;
+        steps.push(ScenarioStep::pass("cluster invariants validated"));
         cluster.shutdown_all();
-        Ok(ScenarioStatus::KnownGap)
+        Ok(ScenarioStatus::Pass)
+    }
+
+    fn scenario_whole_process_restart(
+        &self,
+        steps: &mut Vec<ScenarioStep>,
+    ) -> AppResult<ScenarioStatus> {
+        let mut cluster = self.start_cluster()?;
+        cluster.seed(self.cfg.seed)?;
+        cluster.run_workload(Duration::from_secs(1), 1, self.cfg.seed)?;
+        steps.push(ScenarioStep::pass(
+            "seeded database and baseline workload completed",
+        ));
+        cluster.kill_all();
+        steps.push(ScenarioStep::pass("killed all node processes"));
+        cluster.restart_all()?;
+        steps.push(ScenarioStep::pass("restarted all node processes"));
+        let leader = cluster.wait_leader(Duration::from_secs(15))?;
+        steps.push(ScenarioStep::pass(format!("node {leader} elected leader")));
+        cluster.wait_converged(Duration::from_secs(15))?;
+        steps.push(ScenarioStep::pass("followers converged after restart"));
+        cluster.validate_all()?;
+        steps.push(ScenarioStep::pass("cluster invariants validated"));
+        cluster.shutdown_all();
+        Ok(ScenarioStatus::Pass)
     }
 
     fn start_cluster(&self) -> AppResult<ClusterSupervisor> {
