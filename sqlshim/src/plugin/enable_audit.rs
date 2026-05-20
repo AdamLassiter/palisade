@@ -37,26 +37,39 @@ impl CustomPlugin for EnableAuditPlugin {
         match stmt {
             CustomStatement::EnableAudit(stmt) => {
                 let escaped_table = escape_sql_string(&stmt.table);
-                let ops_str = stmt
-                    .operations
-                    .iter()
-                    .map(|op| match op {
-                        PolicyOperation::Select => "SELECT",
-                        PolicyOperation::Insert => "INSERT",
-                        PolicyOperation::Update => "UPDATE",
-                        PolicyOperation::Delete => "DELETE",
-                        PolicyOperation::All => "ALL",
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let (audit_insert, audit_update, audit_delete) = audit_flags(&stmt.operations);
 
                 format!(
                     r#"
-                    SELECT 'ENABLE AUDIT ON {escaped_table} FOR {ops_str}' AS stub;
+                    SELECT sec_audit_enable('{escaped_table}');
+                    SELECT sec_audit_configure('{escaped_table}', 'audit_insert', {audit_insert});
+                    SELECT sec_audit_configure('{escaped_table}', 'audit_update', {audit_update});
+                    SELECT sec_audit_configure('{escaped_table}', 'audit_delete', {audit_delete});
                     "#
                 )
             }
             _ => unreachable!(),
         }
     }
+}
+
+fn audit_flags(operations: &[PolicyOperation]) -> (i64, i64, i64) {
+    if operations
+        .iter()
+        .any(|op| matches!(op, PolicyOperation::All))
+    {
+        return (1, 1, 1);
+    }
+
+    let audit_insert = operations
+        .iter()
+        .any(|op| matches!(op, PolicyOperation::Insert)) as i64;
+    let audit_update = operations
+        .iter()
+        .any(|op| matches!(op, PolicyOperation::Update)) as i64;
+    let audit_delete = operations
+        .iter()
+        .any(|op| matches!(op, PolicyOperation::Delete)) as i64;
+
+    (audit_insert, audit_update, audit_delete)
 }

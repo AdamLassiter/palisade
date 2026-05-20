@@ -1,15 +1,27 @@
 use std::{
-    io::{self, IsTerminal, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        Mutex,
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::{self, JoinHandle},
     time::Duration,
+};
+
+pub(crate) use palisade_log::{
+    BLUE,
+    BOLD,
+    CYAN,
+    DIM,
+    GREEN,
+    RESET,
+    Spinner,
+    YELLOW,
+    fail,
+    left_cell,
+    persist,
+    phase,
+    print_validation,
+    right_cell,
+    style,
+    success,
+    transient,
 };
 
 use crate::types::{
@@ -25,61 +37,6 @@ use crate::types::{
     WorkerSpec,
     WorkloadProfile,
 };
-
-pub(crate) const RESET: &str = "\x1b[0m";
-pub(crate) const BOLD: &str = "\x1b[1m";
-pub(crate) const DIM: &str = "\x1b[2m";
-pub(crate) const GREEN: &str = "\x1b[32m";
-pub(crate) const YELLOW: &str = "\x1b[33m";
-pub(crate) const BLUE: &str = "\x1b[34m";
-const MAGENTA: &str = "\x1b[35m";
-pub(crate) const CYAN: &str = "\x1b[36m";
-pub(crate) const RED: &str = "\x1b[31m";
-
-static TRANSIENT_ACTIVE: OnceLock<Mutex<bool>> = OnceLock::new();
-
-pub(crate) fn style(code: &'static str) -> &'static str {
-    if io::stdout().is_terminal() { code } else { "" }
-}
-
-fn transient_state() -> &'static Mutex<bool> {
-    TRANSIENT_ACTIVE.get_or_init(|| Mutex::new(false))
-}
-
-pub(crate) fn clear_transient() {
-    let Ok(mut active) = transient_state().lock() else {
-        return;
-    };
-    if *active && io::stdout().is_terminal() {
-        print!("\r\x1b[2K");
-        let _ = io::stdout().flush();
-    }
-    *active = false;
-}
-
-pub(crate) fn transient(msg: impl AsRef<str>) {
-    if !io::stdout().is_terminal() {
-        return;
-    }
-    let Ok(mut active) = transient_state().lock() else {
-        return;
-    };
-    print!(
-        "\r\x1b[2K{}·{} {}{}{}",
-        style(DIM),
-        style(RESET),
-        style(DIM),
-        msg.as_ref(),
-        style(RESET)
-    );
-    let _ = io::stdout().flush();
-    *active = true;
-}
-
-pub(crate) fn persist(msg: impl AsRef<str>) {
-    clear_transient();
-    println!("  {}•{} {}", style(CYAN), style(RESET), msg.as_ref());
-}
 
 pub(crate) fn worker_spec(profile: WorkloadProfile, worker_id: usize) -> WorkerSpec {
     match profile {
@@ -333,7 +290,7 @@ pub(crate) fn banner(cfg: &Config) {
     println!(
         "\n{}{}palisade loadtest{} {}mode={} engine={} workload={} workers={} duration={}s seed={:#x}{}",
         style(BOLD),
-        style(MAGENTA),
+        style(palisade_log::MAGENTA),
         style(RESET),
         style(DIM),
         cfg.mode,
@@ -350,105 +307,4 @@ pub(crate) fn banner(cfg: &Config) {
         style(RESET),
         cfg.workload.description()
     );
-}
-
-pub(crate) fn phase(msg: impl AsRef<str>) {
-    clear_transient();
-    println!("{}→{} {}", style(BLUE), style(RESET), msg.as_ref());
-}
-
-pub(crate) fn success(msg: impl AsRef<str>) {
-    clear_transient();
-    println!("{}✓{} {}", style(GREEN), style(RESET), msg.as_ref());
-}
-
-pub(crate) fn warn(msg: impl AsRef<str>) {
-    clear_transient();
-    println!("{}!{} {}", style(YELLOW), style(RESET), msg.as_ref());
-}
-
-pub(crate) fn fail(msg: impl AsRef<str>) {
-    clear_transient();
-    eprintln!("{}✗{} {}", style(RED), style(RESET), msg.as_ref());
-}
-
-pub(crate) fn print_validation(checks: &[String]) {
-    clear_transient();
-    println!("\n{}{}Validation{}", style(BOLD), style(CYAN), style(RESET));
-    for line in checks {
-        println!("  {}{}{}", style(GREEN), line, style(RESET));
-    }
-}
-
-pub(crate) struct Spinner {
-    done: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-    label: String,
-    animated: bool,
-}
-
-impl Spinner {
-    pub(crate) fn start(label: impl Into<String>) -> Self {
-        let label = label.into();
-        let animated = io::stderr().is_terminal();
-        if !io::stdout().is_terminal() || !animated {
-            phase(&label);
-        }
-        let done = Arc::new(AtomicBool::new(false));
-        let handle = if animated {
-            let done_for_thread = done.clone();
-            let label_for_thread = label.clone();
-            Some(thread::spawn(move || {
-                let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                let mut i = 0usize;
-                while !done_for_thread.load(Ordering::Relaxed) {
-                    eprint!(
-                        "\r{}{}{} {}{}{}",
-                        style(CYAN),
-                        frames[i % frames.len()],
-                        style(RESET),
-                        style(DIM),
-                        label_for_thread,
-                        style(RESET)
-                    );
-                    let _ = io::stderr().flush();
-                    i += 1;
-                    thread::sleep(Duration::from_millis(90));
-                }
-            }))
-        } else {
-            None
-        };
-        Self {
-            done,
-            handle,
-            label,
-            animated,
-        }
-    }
-
-    pub(crate) fn finish(mut self, msg: impl AsRef<str>) {
-        self.stop();
-        success(msg);
-    }
-
-    fn stop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-        if self.animated {
-            eprint!("\r\x1b[2K");
-            let _ = io::stderr().flush();
-        }
-    }
-}
-
-impl Drop for Spinner {
-    fn drop(&mut self) {
-        if self.handle.is_some() {
-            self.stop();
-            warn(format!("{} interrupted", self.label));
-        }
-    }
 }

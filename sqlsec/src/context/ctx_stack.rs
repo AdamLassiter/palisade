@@ -146,10 +146,7 @@ mod tests {
         assert!(stack.pop_named("second").is_none());
 
         // Ensure top is still "third"
-        assert_eq!(
-            stack.stack.last().unwrap().0.as_deref(),
-            Some("third")
-        );
+        assert_eq!(stack.stack.last().unwrap().0.as_deref(), Some("third"));
     }
 
     #[test]

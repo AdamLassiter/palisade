@@ -1,0 +1,7 @@
+------------------------------------------------------------
+[Audit successful writes]
+operation  outcome  logical_table  physical_table  row_pk_json  changed_columns_json  context_json                           row_label_id
+---------  -------  -------------  --------------  -----------  --------------------  -------------------------------------  ------------
+INSERT     success  docs           __sec_docs      {"id":1}                           {"role":["admin"],"tenant":["north"]}  1           
+UPDATE     success  docs           __sec_docs      {"id":1}     ["title"]             {"role":["admin"],"tenant":["north"]}  1           
+DELETE     success  docs           __sec_docs      {"id":1}                           {"role":["admin"],"tenant":["north"]}  1

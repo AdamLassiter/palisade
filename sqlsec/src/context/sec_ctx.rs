@@ -36,7 +36,10 @@ impl SecurityContext {
     /// Merge another context into this one
     pub fn merge(&mut self, other: &SecurityContext) {
         for (k, v) in &other.attrs {
-            self.attrs.entry(k.clone()).or_default().extend(v.iter().cloned());
+            self.attrs
+                .entry(k.clone())
+                .or_default()
+                .extend(v.iter().cloned());
         }
     }
 }

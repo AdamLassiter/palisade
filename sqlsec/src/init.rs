@@ -43,6 +43,35 @@ pub(crate) unsafe fn init_extension_ffi(db: *mut sqlite3) -> Result<()> {
             key   TEXT PRIMARY KEY,
             value INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS sec_audit_config (
+            logical_table TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            audit_insert INTEGER NOT NULL DEFAULT 1,
+            audit_update INTEGER NOT NULL DEFAULT 1,
+            audit_delete INTEGER NOT NULL DEFAULT 1,
+            include_context INTEGER NOT NULL DEFAULT 1,
+            include_changed_columns INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS sec_audit_log (
+            id INTEGER PRIMARY KEY,
+            occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            logical_table TEXT NOT NULL,
+            physical_table TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            row_pk_json TEXT,
+            changed_columns_json TEXT,
+            context_json TEXT NOT NULL,
+            row_label_id INTEGER,
+            error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sec_audit_log_table_time
+            ON sec_audit_log(logical_table, occurred_at);
+        CREATE INDEX IF NOT EXISTS idx_sec_audit_log_operation
+            ON sec_audit_log(operation, outcome);
+
         INSERT OR IGNORE INTO sec_meta VALUES ('generation', 0);
         INSERT OR IGNORE INTO sec_meta VALUES ('last_refresh_generation', 0);
         INSERT OR IGNORE INTO sec_meta VALUES ('views_initialized', 0);

@@ -6,6 +6,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+use palisade_log::{GREEN, RED, RESET, style};
+
 /// Helper: Get absolute path to extension
 fn extension_path() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -67,7 +69,7 @@ fn run_test_case(name: &str) -> bool {
     {
         Ok(child) => child,
         Err(err) => {
-            eprintln!("Failed to run sqlite3: {}", err);
+            palisade_log::fail(format!("Failed to run sqlite3: {}", err));
             return false;
         }
     };
@@ -75,7 +77,7 @@ fn run_test_case(name: &str) -> bool {
     // Send to stdin
     if let Some(stdin) = &mut child.stdin {
         if let Err(err) = stdin.write_all(script.as_bytes()) {
-            eprintln!("Failed to write to sqlite3 stdin: {}", err);
+            palisade_log::fail(format!("Failed to write to sqlite3 stdin: {}", err));
             return false;
         }
     }
@@ -84,7 +86,7 @@ fn run_test_case(name: &str) -> bool {
     let output = match child.wait_with_output() {
         Ok(o) => o,
         Err(err) => {
-            eprintln!("Failed to get sqlite3 output: {}", err);
+            palisade_log::fail(format!("Failed to get sqlite3 output: {}", err));
             return false;
         }
     };
@@ -107,7 +109,7 @@ fn run_test_case(name: &str) -> bool {
     // normal success test
     let actual_trimmed = stdout_str.trim().replace("\r\n", "\n");
     if expected_output != actual_trimmed {
-        eprintln!("\n=== ERROR IN TEST CASE ===\n{}", name);
+        palisade_log::fail(format!("error in test case {name}"));
         eprintln!(
             "=== EXPECTED STDOUT ===\n{}\n=== GOT STDOUT ===\n{}",
             expected_output, actual_trimmed
@@ -127,7 +129,7 @@ fn run_test_case(name: &str) -> bool {
 
     let actual_trimmed = stderr_str.trim().replace("\r\n", "\n");
     if expected_error != actual_trimmed {
-        eprintln!("\n=== ERROR IN TEST CASE ===\n{}", name);
+        palisade_log::fail(format!("error in test case {name}"));
         eprintln!(
             "=== EXPECTED STDERR ===\n{}\n=== GOT STDERR ===\n{}",
             expected_error, actual_trimmed
@@ -160,15 +162,16 @@ fn test_cases() -> Vec<String> {
 fn run_all_sql_tests() {
     let cases = test_cases();
     let mut results = HashMap::new();
-    println!("\trunning {} test cases", cases.len());
+    palisade_log::section("sqlsec integration");
+    palisade_log::label_value("test cases", cases.len());
 
     let start_time = std::time::Instant::now();
     for case in cases {
         let result = run_test_case(&case);
         let msg = if result {
-            "\x1b[0;32mok\x1b[0m"
+            format!("{}ok{}", style(GREEN), style(RESET))
         } else {
-            "\x1b[0;31mfail\x1b[0m"
+            format!("{}fail{}", style(RED), style(RESET))
         };
         println!("\tcase {case} ... {msg}");
         results.insert(case, result);
@@ -179,9 +182,9 @@ fn run_all_sql_tests() {
     let pass_count = results.values().filter(|&&r| r).count();
     let fail_count = results.values().filter(|&&r| !r).count();
     let status = if fail_count == 0 {
-        "\x1b[0;32mPASSED\x1b[0m"
+        format!("{}PASSED{}", style(GREEN), style(RESET))
     } else {
-        "\x1b[0;31mFAILED\x1b[0m"
+        format!("{}FAILED{}", style(RED), style(RESET))
     };
     println!(
         "\ntest result: {status}. {pass_count} passed; {fail_count} failed; finished in {duration_secs}s"

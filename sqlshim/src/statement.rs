@@ -41,12 +41,14 @@ pub enum CustomStatement {
     /// SET COLUMN SECURITY table.column READ 'label_expr' [UPDATE 'label_expr']
     SetColumnSecurity(SetColumnSecurityStmt),
 
-    // ===============
-    // Auditing (STUB)
-    // ===============
+    // ========
+    // Auditing
+    // ========
     /// ENABLE AUDIT ON table [FOR operations]
-    /// Expected: Create audit triggers
     EnableAudit(EnableAuditStmt),
+
+    /// DISABLE AUDIT ON table
+    DisableAudit(DisableAuditStmt),
 
     /// EXPLAIN POLICY ON table FOR USER = 'name'
     /// Expected: Show which rows/columns would be visible
@@ -121,6 +123,11 @@ pub struct SetColumnSecurityStmt {
 pub struct EnableAuditStmt {
     pub table: String,
     pub operations: Vec<PolicyOperation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DisableAuditStmt {
+    pub table: String,
 }
 
 #[derive(Debug, Clone)]

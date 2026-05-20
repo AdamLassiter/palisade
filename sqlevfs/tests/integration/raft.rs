@@ -198,7 +198,9 @@ async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_sqlite_insert_is_propagated_across_databases_via_raft() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     use rusqlite::Connection;

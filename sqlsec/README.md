@@ -9,6 +9,7 @@ It allows you to:
 * Restrict **which columns** a user can update
 * Conditionally **hide entire tables**
 * Safely allow **INSERT / UPDATE / DELETE** through secure views
+* Audit successful secured writes without logging protected values
 * Express access rules using **boolean expressions over attributes**
 * Enforce **MLS-style clearance levels** with dominance relationships
 
@@ -370,6 +371,88 @@ SELECT * FROM employees;
 
 ---
 
+## Write Auditing
+
+`sqlsec` creates an internal audit log for writes made through secured logical views.
+
+Audit rows are stored in `sec_audit_log`:
+
+```sql
+SELECT operation,
+       outcome,
+       logical_table,
+       row_pk_json,
+       changed_columns_json,
+       context_json,
+       row_label_id
+FROM sec_audit_log
+ORDER BY id;
+```
+
+Successful `INSERT`, `UPDATE`, and `DELETE` operations through logical views are audited by the generated `INSTEAD OF` triggers.
+
+The audit log records:
+
+* logical and physical table names
+* operation and outcome
+* primary-key identity as JSON
+* changed column names for updates
+* active security context as JSON
+* row label ID
+* optional error text for manually recorded denied events
+
+It does **not** record old/new column values. This is intentional: audit rows should not become a bypass for column-level security.
+
+### Audit context
+
+```sql
+SELECT sec_audit_context();
+```
+
+Returns the active context as JSON:
+
+```json
+{"role":["admin"],"team":["finance"]}
+```
+
+### Enabling and disabling audit
+
+Audit is enabled by default for each registered table.
+
+```sql
+SELECT sec_audit_disable('employees');
+SELECT sec_audit_enable('employees');
+```
+
+Fine-grained options:
+
+```sql
+SELECT sec_audit_configure('employees', 'audit_insert', 0);
+SELECT sec_audit_configure('employees', 'audit_update', 1);
+SELECT sec_audit_configure('employees', 'audit_delete', 1);
+SELECT sec_audit_configure('employees', 'include_context', 1);
+SELECT sec_audit_configure('employees', 'include_changed_columns', 1);
+```
+
+Supported config keys are:
+
+| Key | Meaning |
+| --- | --- |
+| `enabled` | Master switch for the table |
+| `audit_insert` | Audit successful inserts |
+| `audit_update` | Audit successful updates |
+| `audit_delete` | Audit successful deletes |
+| `include_context` | Store active context JSON |
+| `include_changed_columns` | Store update changed-column names |
+
+### Denied writes
+
+Denied write attempts are rejected by SQLite trigger guards using abort semantics so multi-row statements do not partially apply. Because SQLite rolls back all writes made by the failing statement, durable denied-event rows cannot be inserted into `sec_audit_log` from the same trigger statement without weakening those abort semantics.
+
+For that reason, the built-in trigger audit records successful writes. Applications that need durable denied-attempt auditing should log the failed statement/error at the application boundary, or call `sec_audit_event(...)` from a separate recovery path after catching the error.
+
+---
+
 ## Requirements & Constraints
 
 * Each secured table **must have a primary key**
@@ -394,6 +477,11 @@ SELECT * FROM employees;
 | `sec_refresh_views` | - | Rebuild views for current context |
 | `sec_assert_fresh` | - | Assert views are not stale |
 | `sec_label_visible` | label_id | Check if a label is visible (internal) |
+| `sec_audit_context` | - | Return the active security context as JSON |
+| `sec_audit_enable` | logical_table | Enable audit for a secured table |
+| `sec_audit_disable` | logical_table | Disable audit for a secured table |
+| `sec_audit_configure` | logical_table, key, value | Set an audit config flag |
+| `sec_audit_event` | logical, physical, operation, outcome, row_pk_json, changed_columns_json, row_label_id, error | Insert an audit event; used internally by generated triggers |
 
 ---
 
@@ -407,6 +495,7 @@ SELECT * FROM employees;
 * Table-level visibility
 * MLS-style level dominance
 * Safe write support via triggers
+* Successful write auditing
 * Declarative access rules
 * Scoped context with push/pop
 

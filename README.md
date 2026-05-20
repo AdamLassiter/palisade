@@ -76,6 +76,19 @@ It reports:
 
 ---
 
+### 6) `chaostest` — Durability & Failure-Recovery Harness
+
+`chaostest` is a process-supervised chaos harness for the Raft/EVFS/sqlsec stack. Unlike `loadtest`, it runs each Raft node as a child process so failure injection uses real process death and restart.
+
+It currently exercises:
+
+- follower process kill and restart, reported as a durability gap until follower restart can recover persisted Raft state
+- leader kill and whole-process restart as explicit known-gap scenarios
+- EVFS key loss and sidecar corruption fail-closed checks
+- aggregate invariants, sqlsec audit non-leakage, ciphertext sanity, replay/materialization offsets, and follower write rejection where the scenario reaches validation
+
+---
+
 ## How they fit together
 
 Common combinations:
@@ -85,6 +98,7 @@ Common combinations:
 - **All three**: `sqlshim` shapes incoming SQL, `sqlsec` enforces label-based policy, `sqlevfs` encrypts pages on disk.
 - Use **`lazytest`** as the harness to run these stacks under `LD_PRELOAD`.
 - Use **`loadtest`** to compare throughput, contention behavior, validation correctness, and clustered Raft replication metrics across engines and workloads.
+- Use **`chaostest`** to test durability, failure handling, and recovery gaps with real supervised Raft node processes.
 
 ## Combined usage (conceptual)
 
@@ -107,6 +121,12 @@ To run a distributed replicated cluster harness:
 
 ```sh
 ./run-loadtest
+```
+
+To run a durability/failure-recovery harness:
+
+```sh
+./run-chaostest
 ```
 
 ## Loadtest
@@ -157,6 +177,7 @@ Each run seeds a database, executes the selected workload unless `--validate-onl
 - transfer, order, and audit row counts
 - expected order terminal states
 - `sqlsec` visibility for user/admin/ops contexts
+- `sqlsec` audit metadata and audit-log non-leakage
 - encrypted-file plaintext leakage checks for EVFS-backed modes
 - cluster leader/follower convergence and follower write rejection
 
@@ -178,3 +199,27 @@ For cluster runs, validation waits for follower Raft replay and materialized fol
 The default cluster follower WAL sync policy is `per-batch`, which syncs follower WAL once per applied Raft batch. `coalesced` is an explicit benchmark/performance mode that writes follower WAL immediately but syncs it after the configured batch or delay threshold; this can improve write-heavy clustered benchmarks while weakening follower crash durability inside the sync window.
 
 More detail lives in [`loadtest/README.md`](loadtest/README.md).
+
+## Chaostest
+
+The top-level `run-chaostest` script builds the workspace, creates an EVFS key, sets up the `sqlshim` preload, and runs `chaostest`.
+
+```sh
+./run-chaostest --scenario key-loss --duration-secs 1 --workers 1
+./run-chaostest --scenario sidecar-corrupt --duration-secs 1 --workers 1
+./run-chaostest --scenario follower-kill --duration-secs 1 --workers 1 --keep-artifacts
+```
+
+Defaults are debug mode, `scenario=follower-kill`, `duration=5s`, `workers=4`, and a fixed seed.
+
+Scenarios:
+
+- `follower-kill`: kills a follower process, continues writes, restarts it, then waits for replay/materialization convergence. With the current in-memory Raft storage this is reported as `KNOWN-GAP` and includes replay offsets.
+- `key-loss`: replaces the EVFS key and verifies the encrypted DB fails closed.
+- `sidecar-corrupt`: corrupts the EVFS keyring sidecar and verifies the DB fails closed.
+- `leader-kill` and `whole-process-restart`: runnable with `--include-known-gaps`.
+- `all`: runs the default pass/gap matrix.
+
+Use `--keep-artifacts` to retain per-node stdout/stderr logs and `chaostest-report.json`.
+
+More detail lives in [`chaostest/README.md`](chaostest/README.md).

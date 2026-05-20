@@ -1,4 +1,5 @@
 pub mod assert_fresh;
+pub mod audit;
 pub mod clear_context;
 pub mod define_label;
 pub mod define_level;
@@ -15,6 +16,7 @@ use rusqlite::ffi::{sqlite3, sqlite3_context, sqlite3_result_error};
 
 use crate::register::{
     assert_fresh::AssertFresh,
+    audit::{AuditConfigure, AuditContext, AuditDisable, AuditEnable, AuditEvent},
     clear_context::ClearContext,
     define_label::DefineLabel,
     define_level::DefineLevel,
@@ -40,6 +42,11 @@ trait Sqlite3FunctionV2 {
 /// Register all scalar functions using raw FFI
 pub(crate) fn register_functions_ffi(db: *mut sqlite3) {
     AssertFresh::register(db);
+    AuditConfigure::register(db);
+    AuditContext::register(db);
+    AuditDisable::register(db);
+    AuditEnable::register(db);
+    AuditEvent::register(db);
     ClearContext::register(db);
     DefineLabel::register(db);
     DefineLevel::register(db);

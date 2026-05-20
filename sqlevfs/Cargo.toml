@@ -38,6 +38,7 @@ tempfile = "3"
 rusqlite = "0.38"
 test-log = "0.2"
 env_logger = "*"
+palisade-log = { path = "../palisade-log" }
 
 [features]
 default = ["rusqlite"]

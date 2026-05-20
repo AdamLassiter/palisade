@@ -35,22 +35,20 @@ fn evaluate_comparison(ctx: &SecurityContext, key: &str, op: CompareOp, required
     };
 
     // Check if user has any value for this attr that satisfies the comparison
-    ctx.get_attrs(key)
-        .iter()
-        .any(|user_value| {
-            let user_level = match attr_levels.get(user_value.as_str()) {
-                Some(l) => *l,
-                None => return false,
-            };
+    ctx.get_attrs(key).iter().any(|user_value| {
+        let user_level = match attr_levels.get(user_value.as_str()) {
+            Some(l) => *l,
+            None => return false,
+        };
 
-            match op {
-                CompareOp::Eq => user_level == required_level,
-                CompareOp::Ge => user_level >= required_level,
-                CompareOp::Gt => user_level > required_level,
-                CompareOp::Le => user_level <= required_level,
-                CompareOp::Lt => user_level < required_level,
-            }
-        })
+        match op {
+            CompareOp::Eq => user_level == required_level,
+            CompareOp::Ge => user_level >= required_level,
+            CompareOp::Gt => user_level > required_level,
+            CompareOp::Le => user_level <= required_level,
+            CompareOp::Lt => user_level < required_level,
+        }
+    })
 }
 
 pub fn load_levels(conn: &Connection) -> Result<()> {

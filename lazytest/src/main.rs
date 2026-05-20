@@ -27,13 +27,11 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.iter().any(|a| a == "--perf-sqlshim-child") {
         if let Err(e) = run_sqlshim_perf_child() {
-            eprintln!("sqlshim perf child failed: {e}");
+            palisade_log::fail(format!("sqlshim perf child failed: {e}"));
             std::process::exit(1);
         }
         return;
     }
-
-    println!("=== LazySQL + EVFS Test Suite ===");
 
     let mut mode = "debug";
     let mut run_perf = false;
@@ -53,14 +51,14 @@ fn main() {
                 std::process::exit(0);
             }
             other => {
-                eprintln!("Usage: lazytest [--release|--debug] [--perf|--perf-only]");
-                eprintln!("Unknown option: {}", other);
+                palisade_log::fail("Usage: lazytest [--release|--debug] [--perf|--perf-only]");
+                palisade_log::fail(format!("Unknown option: {}", other));
                 std::process::exit(1);
             }
         }
     }
 
-    println!("Running in {} mode...\n", mode);
+    palisade_log::banner("LazySQL + EVFS Test Suite", format!("mode={mode}"));
 
     let mut t = TestRunner::new();
 
@@ -77,10 +75,10 @@ fn main() {
                 Err(e) => t.fail("sqlshim test suite", &e),
             }
         } else {
-            println!(
-                "\n⚠ Skipping sqlshim/sqlsec tests ({})",
+            palisade_log::warn(format!(
+                "Skipping sqlshim/sqlsec tests ({})",
                 sqlsec_path.display()
-            );
+            ));
         }
 
         let evfs_path_str = format!("../sqlevfs/target/{}/libsqlevfs.so", mode);
@@ -98,7 +96,7 @@ fn main() {
                 }
             }
         } else {
-            println!("\n⚠ Skipping EVFS VFS tests ({})", evfs_path.display());
+            palisade_log::warn(format!("Skipping EVFS VFS tests ({})", evfs_path.display()));
         }
     }
 

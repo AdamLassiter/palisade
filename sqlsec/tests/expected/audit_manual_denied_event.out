@@ -1,0 +1,8 @@
+------------------------------------------------------------
+[Manual denied audit event]
+recorded
+--------
+1       
+operation  outcome  row_pk_json  changed_columns_json  context_json       error                        
+---------  -------  -----------  --------------------  -----------------  -----------------------------
+UPDATE     denied   {"id":1}     ["title"]             {"role":["user"]}  update denied on column title

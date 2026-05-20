@@ -1,0 +1,6 @@
+------------------------------------------------------------
+[Audit does not leak hidden values]
+operation  changed_columns_json  leaked
+---------  --------------------  ------
+INSERT                           0     
+UPDATE     ["name"]              0

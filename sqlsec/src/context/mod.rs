@@ -1,12 +1,12 @@
-pub mod sec_ctx;
 pub mod ctx_stack;
+pub mod sec_ctx;
 
 use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 
-use crate::context::{sec_ctx::SecurityContext, ctx_stack::ContextStack};
+use crate::context::{ctx_stack::ContextStack, sec_ctx::SecurityContext};
 
 /// Global map: db handle address -> SecurityContext
 pub static CONTEXTS: Lazy<Mutex<HashMap<usize, ContextStack>>> =

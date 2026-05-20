@@ -165,5 +165,58 @@ pub(crate) fn run_sqlsec_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     let docs_after_clear: i64 = conn.query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))?;
     t.assert_eq("docs visible after clear_context", &docs_after_clear, &1i64);
 
+    t.section("sqlsec Audit");
+    let _: i64 = conn.query_row(
+        "SELECT sec_set_attr(?1, ?2)",
+        params!["role", "auditor"],
+        |r| r.get(0),
+    )?;
+    let _: i64 = conn.query_row("SELECT sec_refresh_views()", [], |r| r.get(0))?;
+    let audit_context: String = conn.query_row("SELECT sec_audit_context()", [], |r| r.get(0))?;
+    if audit_context.contains(r#""role":["auditor"]"#) {
+        t.ok("sec_audit_context includes active attributes");
+    } else {
+        t.fail("sec_audit_context", &audit_context);
+    }
+
+    conn.execute(
+        "INSERT INTO docs (id, title, amount) VALUES (?1, ?2, ?3)",
+        params![3i64, "audit-doc", 30i64],
+    )?;
+    conn.execute(
+        "UPDATE docs SET title = ?1 WHERE id = ?2",
+        params!["audit-doc-updated", 3i64],
+    )?;
+    conn.execute("DELETE FROM docs WHERE id = ?1", [3i64])?;
+
+    let audit_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM sec_audit_log", [], |r| r.get(0))?;
+    t.assert_eq("write audit rows", &audit_count, &3i64);
+
+    let changed_columns: String = conn.query_row(
+        "SELECT changed_columns_json FROM sec_audit_log WHERE operation = 'UPDATE'",
+        [],
+        |r| r.get(0),
+    )?;
+    t.assert_eq(
+        "audit update changed columns",
+        &changed_columns,
+        &r#"["title"]"#.to_string(),
+    );
+
+    let disabled: i64 = conn.query_row("SELECT sec_audit_disable('docs')", [], |r| r.get(0))?;
+    t.assert_eq("sec_audit_disable", &disabled, &1i64);
+    conn.execute(
+        "INSERT INTO docs (id, title, amount) VALUES (?1, ?2, ?3)",
+        params![4i64, "audit-disabled", 40i64],
+    )?;
+    let audit_count_after_disable: i64 =
+        conn.query_row("SELECT COUNT(*) FROM sec_audit_log", [], |r| r.get(0))?;
+    t.assert_eq(
+        "audit disabled suppresses writes",
+        &audit_count_after_disable,
+        &3i64,
+    );
+
     Ok(())
 }

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="debug"
+DURATION_SECS=5
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release)
+      MODE="release"
+      ARGS+=("$1")
+      shift
+      ;;
+    --debug)
+      MODE="debug"
+      ARGS+=("$1")
+      shift
+      ;;
+    --duration-secs)
+      DURATION_SECS="${2:-5}"
+      ARGS+=("$1" "$DURATION_SECS")
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+echo "Running chaostest in $MODE mode..."
+
+if [[ "$MODE" == "release" ]]; then
+  ./cargow build --release
+else
+  ./cargow build
+fi
+
+KEYFILE=/tmp/evfs-chaostest-master.key
+dd if=/dev/urandom of="$KEYFILE" bs=32 count=1 status=none
+
+cd chaostest
+
+SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
+CMD=("./target/$MODE/chaostest" "${ARGS[@]}")
+APP_TIMEOUT_SECS=$((DURATION_SECS * 6 + 60))
+
+EVFS_KEYFILE="$KEYFILE" \
+  LD_PRELOAD="$SQLSHIM_LIB" \
+  RUST_BACKTRACE=full \
+  RUST_LIB_BACKTRACE=1 \
+  timeout "$APP_TIMEOUT_SECS" "${CMD[@]}"

@@ -37,9 +37,11 @@ use util::{
     YELLOW,
     banner,
     fail,
+    left_cell,
     phase,
     print_metrics,
     print_validation,
+    right_cell,
     style,
     success,
 };
@@ -324,20 +326,17 @@ fn print_summary(
         );
     }
     println!(
-        "{}{}{}",
+        "{}  {:<16} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>10} {:>12}{}",
         style(DIM),
-        format!(
-            "  {:<16} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>10} {:>12}",
-            label,
-            "ops/sec",
-            "read/sec",
-            "write/sec",
-            "ops",
-            "locks",
-            "writes",
-            "workload",
-            "validation"
-        ),
+        label,
+        "ops/sec",
+        "read/sec",
+        "write/sec",
+        "ops",
+        "locks",
+        "writes",
+        "workload",
+        "validation",
         style(RESET)
     );
     for summary in summaries {
@@ -426,24 +425,6 @@ fn print_matrix_total(summaries: &[ProfileSummary], elapsed: Duration) {
     );
 }
 
-fn left_cell(value: &str, width: usize, color: &'static str) -> String {
-    left_cell_styled(value, width, style(color), style(RESET))
-}
-
-fn right_cell(value: &str, width: usize, color: &'static str) -> String {
-    right_cell_styled(value, width, style(color), style(RESET))
-}
-
-fn left_cell_styled(value: &str, width: usize, start: &str, end: &str) -> String {
-    let padding = width.saturating_sub(value.len());
-    format!("{}{}{}{}", start, value, end, " ".repeat(padding))
-}
-
-fn right_cell_styled(value: &str, width: usize, start: &str, end: &str) -> String {
-    let padding = width.saturating_sub(value.len());
-    format!("{}{}{}{}", " ".repeat(padding), start, value, end)
-}
-
 fn total_ops(metrics: &WorkerMetrics) -> u64 {
     read_ops(metrics)
         + metrics.transfers_ok
@@ -454,43 +435,4 @@ fn total_ops(metrics: &WorkerMetrics) -> u64 {
 
 fn read_ops(metrics: &WorkerMetrics) -> u64 {
     metrics.point_reads + metrics.range_reads + metrics.admin_scans
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{left_cell_styled, right_cell_styled};
-
-    fn strip_ansi(input: &str) -> String {
-        let mut out = String::new();
-        let mut chars = input.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '\x1b' && chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            } else {
-                out.push(ch);
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn left_cells_keep_rhs_padding_outside_color() {
-        for workload in ["balanced", "scan-heavy", "transfer-heavy"] {
-            let cell = left_cell_styled(workload, 16, "\x1b[36m", "\x1b[0m");
-            assert!(cell.ends_with(' ') || workload.len() >= 16);
-            assert_eq!(strip_ansi(&cell), format!("{workload:<16}"));
-        }
-    }
-
-    #[test]
-    fn right_cells_keep_lhs_padding_outside_color() {
-        let cell = right_cell_styled("135.19", 10, "\x1b[32m", "\x1b[0m");
-        assert!(cell.starts_with("    \x1b[32m"));
-        assert_eq!(strip_ansi(&cell), format!("{:>10}", "135.19"));
-    }
 }

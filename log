@@ -1,0 +1,1042 @@
+Running loadtest in release mode with engine=all...
+🐛 Debug mode detected → enabling full Rust backtraces
+🚀 Running 'cargo build --release' in ./lazytest
+✅ Finished 'cargo build' in ./lazytest
+🚀 Running 'cargo build --release' in ./loadtest
+✅ Finished 'cargo build' in ./loadtest
+🚀 Running 'cargo build --release' in ./sqlevfs
+✅ Finished 'cargo build' in ./sqlevfs
+🚀 Running 'cargo build --release' in ./sqlsec
+✅ Finished 'cargo build' in ./sqlsec
+🚀 Running 'cargo build --release' in ./sqlshim
+✅ Finished 'cargo build' in ./sqlshim
+→ running all engines and all workload profiles grouped by workload workers=8 duration=10s
+
+palisade loadtest mode=release engine=sqlite workload=balanced workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile mixed reads, writes, transfers, and admin scans
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-vqK6s5
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-vqK6s5/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-vqK6s5/leader.db with 64 initial orders
+→ running workload=balanced engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-vqK6s5/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 5278
+  PASS audit row count = 11938
+  PASS no negative balances
+  PASS validated 6474 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.02s
+  workload overrun: 0.02s
+  validation time: 0.00s
+  engine: sqlite
+  workload: balanced (mixed reads, writes, transfers, and admin scans)
+  total ops: 338716
+  ops/sec: 33808.44
+  read ops/sec: 32636.03
+  write ops/sec: 1172.41
+  reads: total=326970 point=4559 range=3810 admin_scans=318601
+  writes: total=11746 transfers_ok=5278 transfers_skipped=0 orders_created=6410 order_updates=58
+  control: refreshes=0
+  lock/busy conflicts: total=1100 point_read=0 range_read=0 transfer_begin=0 transfer_body=1100 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.015ms
+  avg range read: 0.090ms
+  avg transfer: 0.662ms
+  avg create order: 4.693ms
+  avg order update: 13.401ms
+  avg admin scan: 0.052ms
+
+palisade loadtest mode=release engine=secure workload=balanced workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile mixed reads, writes, transfers, and admin scans
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-IEpre3
+  • evfs keyfile /tmp/palisade-loadtest-IEpre3/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-IEpre3/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-IEpre3/leader.db with 64 initial orders
+→ running workload=balanced engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-IEpre3/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 2893
+  PASS audit row count = 10513
+  PASS no negative balances
+  PASS validated 7423 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.45s
+  workload time: 10.04s
+  workload overrun: 0.04s
+  validation time: 0.01s
+  engine: secure
+  workload: balanced (mixed reads, writes, transfers, and admin scans)
+  total ops: 255267
+  ops/sec: 25426.12
+  read ops/sec: 24398.09
+  write ops/sec: 1028.03
+  reads: total=244946 point=5232 range=4321 admin_scans=235393
+  writes: total=10321 transfers_ok=2893 transfers_skipped=0 orders_created=7359 order_updates=69
+  control: refreshes=0
+  lock/busy conflicts: total=1165 point_read=0 range_read=0 transfer_begin=0 transfer_body=1165 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.017ms
+  avg range read: 0.111ms
+  avg transfer: 0.974ms
+  avg create order: 4.055ms
+  avg order update: 12.759ms
+  avg admin scan: 0.071ms
+
+palisade loadtest mode=release engine=cluster workload=balanced workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile mixed reads, writes, transfers, and admin scans
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-7sc9qi
+  • evfs keyfile /tmp/palisade-loadtest-7sc9qi/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:41627 (127.0.0.1:41627)
+  • raft node 2 http://127.0.0.1:43835 (127.0.0.1:43835)
+  • raft node 3 http://127.0.0.1:40099 (127.0.0.1:40099)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-7sc9qi/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-7sc9qi/leader.db with 64 initial orders
+→ running workload=balanced engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-7sc9qi/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 2444
+  PASS audit row count = 5339
+  PASS no negative balances
+  PASS validated 2741 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.01s
+  PASS raft submit syncs=5170 records=25152 frames=25130 avg_submit=0.548ms max_submit=29.261ms last_records=9 last_frames=9 last_submit=0.395ms
+  PASS raft leader xSync calls=6083 avg_total=1.364ms avg_inner_sync=0.896ms avg_drain=0.000ms last_total=0.445ms last_inner_sync=0.444ms last_drain=0.000ms
+  PASS follower 2 replay batches=5170 records=25152 frames=25130 wal_sync_policy=per-batch wal_syncs=5170 last_batch_records=9 last_apply=0.679ms
+  PASS follower 2 replay apply timing avg_wal_write=0.020ms avg_wal_sync=1.278ms last_wal_write=0.024ms last_wal_sync=0.635ms last_wal_synced_offset=1660392 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=5170 frames=25130 db_syncs=5148 queue_depth=0 errors=0 last_offset=1660392 avg_db_write=0.011ms avg_db_sync=0.927ms avg_shm=0.680ms last_db_write=0.017ms last_db_sync=0.921ms last_shm=0.015ms
+  PASS follower 3 replay batches=5170 records=25152 frames=25130 wal_sync_policy=per-batch wal_syncs=5170 last_batch_records=9 last_apply=1.236ms
+  PASS follower 3 replay apply timing avg_wal_write=0.019ms avg_wal_sync=1.308ms last_wal_write=0.031ms last_wal_sync=1.183ms last_wal_synced_offset=1660392 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=5170 frames=25130 db_syncs=5148 queue_depth=0 errors=0 last_offset=1660392 avg_db_write=0.011ms avg_db_sync=0.917ms avg_shm=0.659ms last_db_write=0.016ms last_db_sync=0.918ms last_shm=0.011ms
+  PASS follower 2 rejected write probe in 0.085ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.083ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 10.56s
+  workload time: 10.09s
+  workload overrun: 0.09s
+  validation time: 0.01s
+  engine: cluster
+  workload: balanced (mixed reads, writes, transfers, and admin scans)
+  total ops: 447883
+  ops/sec: 44377.54
+  read ops/sec: 43867.56
+  write ops/sec: 509.98
+  reads: total=442736 point=1947 range=1544 admin_scans=439245
+  writes: total=5147 transfers_ok=2444 transfers_skipped=0 orders_created=2677 order_updates=26
+  control: refreshes=0
+  lock/busy conflicts: total=1031 point_read=0 range_read=0 transfer_begin=0 transfer_body=1031 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.017ms
+  avg range read: 0.054ms
+  avg transfer: 1.777ms
+  avg create order: 11.658ms
+  avg order update: 3.014ms
+  avg admin scan: 0.037ms
+
+All Engines (workload=balanced)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite             33808.44   32636.03    1172.41   338716     1100    11746     10.02s        0.00s
+  secure             25426.12   24398.09    1028.03   255267     1165    10321     10.04s        0.01s
+  cluster            44377.54   43867.56     509.98   447883     1031     5147     10.09s        0.01s
+
+palisade loadtest mode=release engine=sqlite workload=read-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile tenant point/range reads with light writes
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-dYGcLF
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-dYGcLF/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-dYGcLF/leader.db with 64 initial orders
+→ running workload=read-heavy engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-dYGcLF/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 12801
+  PASS no negative balances
+  PASS validated 12487 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.03s
+  workload overrun: 0.03s
+  validation time: 0.00s
+  engine: sqlite
+  workload: read-heavy (tenant point/range reads with light writes)
+  total ops: 152218
+  ops/sec: 15177.94
+  read ops/sec: 13920.68
+  write ops/sec: 1257.27
+  reads: total=139609 point=85279 range=54330 admin_scans=0
+  writes: total=12609 transfers_ok=0 transfers_skipped=0 orders_created=12423 order_updates=186
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.009ms
+  avg range read: 0.079ms
+  avg create order: 4.073ms
+  avg order update: 36.952ms
+
+palisade loadtest mode=release engine=secure workload=read-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile tenant point/range reads with light writes
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-pywvAO
+  • evfs keyfile /tmp/palisade-loadtest-pywvAO/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-pywvAO/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-pywvAO/leader.db with 64 initial orders
+→ running workload=read-heavy engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-pywvAO/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 11349
+  PASS no negative balances
+  PASS validated 11030 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.45s
+  workload time: 10.02s
+  workload overrun: 0.02s
+  validation time: 0.01s
+  engine: secure
+  workload: read-heavy (tenant point/range reads with light writes)
+  total ops: 134025
+  ops/sec: 13377.03
+  read ops/sec: 12263.45
+  write ops/sec: 1113.58
+  reads: total=122868 point=75049 range=47819 admin_scans=0
+  writes: total=11157 transfers_ok=0 transfers_skipped=0 orders_created=10966 order_updates=191
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.009ms
+  avg range read: 0.076ms
+  avg create order: 4.580ms
+  avg order update: 31.715ms
+
+palisade loadtest mode=release engine=cluster workload=read-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile tenant point/range reads with light writes
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-jlIpzo
+  • evfs keyfile /tmp/palisade-loadtest-jlIpzo/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:46329 (127.0.0.1:46329)
+  • raft node 2 http://127.0.0.1:32865 (127.0.0.1:32865)
+  • raft node 3 http://127.0.0.1:46503 (127.0.0.1:46503)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-jlIpzo/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-jlIpzo/leader.db with 64 initial orders
+→ running workload=read-heavy engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-jlIpzo/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 5132
+  PASS no negative balances
+  PASS validated 4924 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.00s
+  PASS raft submit syncs=4962 records=21652 frames=21631 avg_submit=0.499ms max_submit=28.522ms last_records=4 last_frames=4 last_submit=0.323ms
+  PASS raft leader xSync calls=5244 avg_total=1.580ms avg_inner_sync=1.105ms avg_drain=0.000ms last_total=0.129ms last_inner_sync=0.129ms last_drain=0.000ms
+  PASS follower 2 replay batches=4962 records=21652 frames=21631 wal_sync_policy=per-batch wal_syncs=4962 last_batch_records=4 last_apply=0.680ms
+  PASS follower 2 replay apply timing avg_wal_write=0.018ms avg_wal_sync=1.423ms last_wal_write=0.014ms last_wal_sync=0.649ms last_wal_synced_offset=1849912 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=4962 frames=21631 db_syncs=4941 queue_depth=0 errors=0 last_offset=1849912 avg_db_write=0.010ms avg_db_sync=0.958ms avg_shm=0.731ms last_db_write=0.010ms last_db_sync=0.708ms last_shm=0.009ms
+  PASS follower 3 replay batches=4962 records=21652 frames=21631 wal_sync_policy=per-batch wal_syncs=4962 last_batch_records=4 last_apply=1.101ms
+  PASS follower 3 replay apply timing avg_wal_write=0.018ms avg_wal_sync=1.443ms last_wal_write=0.022ms last_wal_sync=1.061ms last_wal_synced_offset=1849912 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=4962 frames=21631 db_syncs=4941 queue_depth=0 errors=0 last_offset=1849912 avg_db_write=0.010ms avg_db_sync=1.027ms avg_shm=0.752ms last_db_write=0.010ms last_db_sync=0.569ms last_shm=0.009ms
+  PASS follower 2 rejected write probe in 0.101ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.102ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 10.48s
+  workload time: 10.06s
+  workload overrun: 0.06s
+  validation time: 0.01s
+  engine: cluster
+  workload: read-heavy (tenant point/range reads with light writes)
+  total ops: 59491
+  ops/sec: 5914.62
+  read ops/sec: 5423.48
+  write ops/sec: 491.14
+  reads: total=54551 point=33182 range=21369 admin_scans=0
+  writes: total=4940 transfers_ok=0 transfers_skipped=0 orders_created=4860 order_updates=80
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.010ms
+  avg range read: 0.038ms
+  avg create order: 10.683ms
+  avg order update: 73.743ms
+
+All Engines (workload=read-heavy)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite             15177.94   13920.68    1257.27   152218        0    12609     10.03s        0.00s
+  secure             13377.03   12263.45    1113.58   134025        0    11157     10.02s        0.01s
+  cluster             5914.62    5423.48     491.14    59491        0     4940     10.06s        0.01s
+
+palisade loadtest mode=release engine=sqlite workload=write-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile order creation/update pressure
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-RSiRC2
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-RSiRC2/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-RSiRC2/leader.db with 64 initial orders
+→ running workload=write-heavy engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-RSiRC2/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 3504
+  PASS audit row count = 17896
+  PASS no negative balances
+  PASS validated 13699 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.05s
+  workload overrun: 0.05s
+  validation time: 0.00s
+  engine: sqlite
+  workload: write-heavy (order creation/update pressure)
+  total ops: 26305
+  ops/sec: 2616.59
+  read ops/sec: 855.55
+  write ops/sec: 1761.04
+  reads: total=8601 point=3958 range=2624 admin_scans=2019
+  writes: total=17704 transfers_ok=3504 transfers_skipped=0 orders_created=13635 order_updates=565
+  control: refreshes=0
+  lock/busy conflicts: total=1423 point_read=0 range_read=0 transfer_begin=0 transfer_body=1423 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.018ms
+  avg range read: 0.106ms
+  avg transfer: 0.576ms
+  avg create order: 2.613ms
+  avg order update: 17.255ms
+  avg admin scan: 0.230ms
+
+palisade loadtest mode=release engine=secure workload=write-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile order creation/update pressure
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-a4hTzB
+  • evfs keyfile /tmp/palisade-loadtest-a4hTzB/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-a4hTzB/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-a4hTzB/leader.db with 64 initial orders
+→ running workload=write-heavy engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-a4hTzB/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 3100
+  PASS audit row count = 15953
+  PASS no negative balances
+  PASS validated 12189 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.54s
+  workload time: 10.10s
+  workload overrun: 0.10s
+  validation time: 0.01s
+  engine: secure
+  workload: write-heavy (order creation/update pressure)
+  total ops: 23377
+  ops/sec: 2314.76
+  read ops/sec: 754.13
+  write ops/sec: 1560.63
+  reads: total=7616 point=3479 range=2308 admin_scans=1829
+  writes: total=15761 transfers_ok=3100 transfers_skipped=0 orders_created=12125 order_updates=536
+  control: refreshes=0
+  lock/busy conflicts: total=1352 point_read=0 range_read=0 transfer_begin=0 transfer_body=1352 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.019ms
+  avg range read: 0.104ms
+  avg transfer: 0.659ms
+  avg create order: 3.118ms
+  avg order update: 8.432ms
+  avg admin scan: 0.275ms
+
+palisade loadtest mode=release engine=cluster workload=write-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile order creation/update pressure
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-xApMgI
+  • evfs keyfile /tmp/palisade-loadtest-xApMgI/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:33589 (127.0.0.1:33589)
+  • raft node 2 http://127.0.0.1:46829 (127.0.0.1:46829)
+  • raft node 3 http://127.0.0.1:39057 (127.0.0.1:39057)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-xApMgI/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-xApMgI/leader.db with 64 initial orders
+→ running workload=write-heavy engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-xApMgI/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 2932
+  PASS audit row count = 6067
+  PASS no negative balances
+  PASS validated 2877 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.00s
+  PASS raft submit syncs=5905 records=28553 frames=28524 avg_submit=0.594ms max_submit=17.523ms last_records=7 last_frames=7 last_submit=0.392ms
+  PASS raft leader xSync calls=5969 avg_total=1.476ms avg_inner_sync=0.886ms avg_drain=0.000ms last_total=0.187ms last_inner_sync=0.186ms last_drain=0.000ms
+  PASS follower 2 replay batches=5905 records=28553 frames=28524 wal_sync_policy=per-batch wal_syncs=5905 last_batch_records=7 last_apply=1.178ms
+  PASS follower 2 replay apply timing avg_wal_write=0.019ms avg_wal_sync=1.293ms last_wal_write=0.021ms last_wal_sync=1.137ms last_wal_synced_offset=4070592 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=5905 frames=28524 db_syncs=5876 queue_depth=0 errors=0 last_offset=4070592 avg_db_write=0.010ms avg_db_sync=0.904ms avg_shm=0.688ms last_db_write=0.014ms last_db_sync=0.565ms last_shm=0.012ms
+  PASS follower 3 replay batches=5905 records=28553 frames=28524 wal_sync_policy=per-batch wal_syncs=5905 last_batch_records=7 last_apply=0.688ms
+  PASS follower 3 replay apply timing avg_wal_write=0.019ms avg_wal_sync=1.282ms last_wal_write=0.021ms last_wal_sync=0.647ms last_wal_synced_offset=4070592 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=5905 frames=28524 db_syncs=5876 queue_depth=0 errors=0 last_offset=4070592 avg_db_write=0.011ms avg_db_sync=0.887ms avg_shm=0.690ms last_db_write=0.014ms last_db_sync=0.752ms last_shm=0.014ms
+  PASS follower 2 rejected write probe in 0.093ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.110ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 10.56s
+  workload time: 10.10s
+  workload overrun: 0.10s
+  validation time: 0.01s
+  engine: cluster
+  workload: write-heavy (order creation/update pressure)
+  total ops: 8854
+  ops/sec: 876.28
+  read ops/sec: 294.83
+  write ops/sec: 581.45
+  reads: total=2979 point=785 range=523 admin_scans=1671
+  writes: total=5875 transfers_ok=2932 transfers_skipped=0 orders_created=2813 order_updates=130
+  control: refreshes=0
+  lock/busy conflicts: total=1170 point_read=0 range_read=0 transfer_begin=0 transfer_body=1169 create_order=1 order_update=0 admin_scan=0
+  avg point read: 0.021ms
+  avg range read: 0.056ms
+  avg transfer: 1.645ms
+  avg create order: 8.614ms
+  avg order update: 88.571ms
+  avg admin scan: 0.127ms
+
+All Engines (workload=write-heavy)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite              2616.59     855.55    1761.04    26305     1423    17704     10.05s        0.00s
+  secure              2314.76     754.13    1560.63    23377     1352    15761     10.10s        0.01s
+  cluster              876.28     294.83     581.45     8854     1170     5875     10.10s        0.01s
+
+palisade loadtest mode=release engine=sqlite workload=transfer-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile multi-row transfer transactions
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-h3iLFC
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-h3iLFC/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-h3iLFC/leader.db with 64 initial orders
+→ running workload=transfer-heavy engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-h3iLFC/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 17086
+  PASS audit row count = 18121
+  PASS no negative balances
+  PASS validated 859 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.07s
+  workload overrun: 0.07s
+  validation time: 0.00s
+  engine: sqlite
+  workload: transfer-heavy (multi-row transfer transactions)
+  total ops: 21743
+  ops/sec: 2158.88
+  read ops/sec: 378.70
+  write ops/sec: 1780.19
+  reads: total=3814 point=860 range=621 admin_scans=2333
+  writes: total=17929 transfers_ok=17086 transfers_skipped=0 orders_created=795 order_updates=48
+  control: refreshes=0
+  lock/busy conflicts: total=3872 point_read=0 range_read=0 transfer_begin=0 transfer_body=3872 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.014ms
+  avg range read: 0.034ms
+  avg transfer: 0.555ms
+  avg create order: 14.482ms
+  avg order update: 47.490ms
+  avg admin scan: 0.045ms
+
+palisade loadtest mode=release engine=secure workload=transfer-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile multi-row transfer transactions
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-TIHqJ1
+  • evfs keyfile /tmp/palisade-loadtest-TIHqJ1/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-TIHqJ1/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-TIHqJ1/leader.db with 64 initial orders
+→ running workload=transfer-heavy engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-TIHqJ1/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 15324
+  PASS audit row count = 15963
+  PASS no negative balances
+  PASS validated 490 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.54s
+  workload time: 10.10s
+  workload overrun: 0.10s
+  validation time: 0.01s
+  engine: secure
+  workload: transfer-heavy (multi-row transfer transactions)
+  total ops: 18493
+  ops/sec: 1830.99
+  read ops/sec: 269.51
+  write ops/sec: 1561.49
+  reads: total=2722 point=458 range=346 admin_scans=1918
+  writes: total=15771 transfers_ok=15324 transfers_skipped=0 orders_created=426 order_updates=21
+  control: refreshes=0
+  lock/busy conflicts: total=1630 point_read=0 range_read=0 transfer_begin=0 transfer_body=1630 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.014ms
+  avg range read: 0.027ms
+  avg transfer: 0.631ms
+  avg create order: 14.708ms
+  avg order update: 78.437ms
+  avg admin scan: 0.042ms
+
+palisade loadtest mode=release engine=cluster workload=transfer-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile multi-row transfer transactions
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-oxPBPu
+  • evfs keyfile /tmp/palisade-loadtest-oxPBPu/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:45211 (127.0.0.1:45211)
+  • raft node 2 http://127.0.0.1:40833 (127.0.0.1:40833)
+  • raft node 3 http://127.0.0.1:46093 (127.0.0.1:46093)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-oxPBPu/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-oxPBPu/leader.db with 64 initial orders
+→ running workload=transfer-heavy engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-oxPBPu/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 4888
+  PASS audit row count = 5153
+  PASS no negative balances
+  PASS validated 133 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.00s
+  PASS raft submit syncs=4990 records=26685 frames=26657 avg_submit=0.606ms max_submit=12.268ms last_records=9 last_frames=9 last_submit=0.472ms
+  PASS raft leader xSync calls=5042 avg_total=1.777ms avg_inner_sync=1.175ms avg_drain=0.000ms last_total=0.190ms last_inner_sync=0.190ms last_drain=0.000ms
+  PASS follower 2 replay batches=4990 records=26685 frames=26657 wal_sync_policy=per-batch wal_syncs=4990 last_batch_records=9 last_apply=0.712ms
+  PASS follower 2 replay apply timing avg_wal_write=0.021ms avg_wal_sync=1.460ms last_wal_write=0.027ms last_wal_sync=0.660ms last_wal_synced_offset=914672 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=4990 frames=26657 db_syncs=4962 queue_depth=0 errors=0 last_offset=914672 avg_db_write=0.012ms avg_db_sync=0.951ms avg_shm=0.785ms last_db_write=0.017ms last_db_sync=0.928ms last_shm=0.019ms
+  PASS follower 3 replay batches=4990 records=26685 frames=26657 wal_sync_policy=per-batch wal_syncs=4990 last_batch_records=9 last_apply=1.267ms
+  PASS follower 3 replay apply timing avg_wal_write=0.021ms avg_wal_sync=1.441ms last_wal_write=0.027ms last_wal_sync=1.216ms last_wal_synced_offset=914672 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=4990 frames=26657 db_syncs=4962 queue_depth=0 errors=0 last_offset=914672 avg_db_write=0.012ms avg_db_sync=0.998ms avg_shm=0.717ms last_db_write=0.017ms last_db_sync=0.880ms last_shm=0.012ms
+  PASS follower 2 rejected write probe in 0.092ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.088ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 10.49s
+  workload time: 10.09s
+  workload overrun: 0.09s
+  validation time: 0.01s
+  engine: cluster
+  workload: transfer-heavy (multi-row transfer transactions)
+  total ops: 5867
+  ops/sec: 581.37
+  read ops/sec: 89.78
+  write ops/sec: 491.60
+  reads: total=906 point=65 range=65 admin_scans=776
+  writes: total=4961 transfers_ok=4888 transfers_skipped=0 orders_created=69 order_updates=4
+  control: refreshes=0
+  lock/busy conflicts: total=2234 point_read=0 range_read=0 transfer_begin=0 transfer_body=2234 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.021ms
+  avg range read: 0.030ms
+  avg transfer: 2.028ms
+  avg create order: 107.491ms
+  avg order update: 3.880ms
+  avg admin scan: 0.058ms
+
+All Engines (workload=transfer-heavy)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite              2158.88     378.70    1780.19    21743     3872    17929     10.07s        0.00s
+  secure              1830.99     269.51    1561.49    18493     1630    15771     10.10s        0.01s
+  cluster              581.37      89.78     491.60     5867     2234     4961     10.09s        0.01s
+
+palisade loadtest mode=release engine=sqlite workload=scan-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile admin aggregate scans
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-PbX4oo
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-PbX4oo/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-PbX4oo/leader.db with 64 initial orders
+→ running workload=scan-heavy engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-PbX4oo/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 6203
+  PASS no negative balances
+  PASS validated 5678 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.01s
+  workload overrun: 0.01s
+  validation time: 0.00s
+  engine: sqlite
+  workload: scan-heavy (admin aggregate scans)
+  total ops: 775819
+  ops/sec: 77522.43
+  read ops/sec: 76921.80
+  write ops/sec: 600.64
+  reads: total=769808 point=15151 range=15222 admin_scans=739435
+  writes: total=6011 transfers_ok=0 transfers_skipped=0 orders_created=5614 order_updates=397
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.011ms
+  avg range read: 0.129ms
+  avg create order: 1.749ms
+  avg order update: 4.502ms
+  avg admin scan: 0.066ms
+
+palisade loadtest mode=release engine=secure workload=scan-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile admin aggregate scans
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-7S6DCI
+  • evfs keyfile /tmp/palisade-loadtest-7S6DCI/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-7S6DCI/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-7S6DCI/leader.db with 64 initial orders
+→ running workload=scan-heavy engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-7S6DCI/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 6038
+  PASS no negative balances
+  PASS validated 5515 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.45s
+  workload time: 10.01s
+  workload overrun: 0.01s
+  validation time: 0.01s
+  engine: secure
+  workload: scan-heavy (admin aggregate scans)
+  total ops: 744861
+  ops/sec: 74413.70
+  read ops/sec: 73829.67
+  write ops/sec: 584.03
+  reads: total=739015 point=14742 range=14784 admin_scans=709489
+  writes: total=5846 transfers_ok=0 transfers_skipped=0 orders_created=5451 order_updates=395
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.012ms
+  avg range read: 0.140ms
+  avg create order: 1.857ms
+  avg order update: 3.489ms
+  avg admin scan: 0.069ms
+
+palisade loadtest mode=release engine=cluster workload=scan-heavy workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile admin aggregate scans
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-HiLazh
+  • evfs keyfile /tmp/palisade-loadtest-HiLazh/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:45947 (127.0.0.1:45947)
+  • raft node 2 http://127.0.0.1:42925 (127.0.0.1:42925)
+  • raft node 3 http://127.0.0.1:43115 (127.0.0.1:43115)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-HiLazh/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-HiLazh/leader.db with 64 initial orders
+→ running workload=scan-heavy engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-HiLazh/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 0
+  PASS audit row count = 4073
+  PASS no negative balances
+  PASS validated 3710 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.00s
+  PASS raft submit syncs=3890 records=16402 frames=16394 avg_submit=0.433ms max_submit=8.984ms last_records=8 last_frames=8 last_submit=0.365ms
+  PASS raft leader xSync calls=6029 avg_total=1.082ms avg_inner_sync=0.801ms avg_drain=0.000ms last_total=0.553ms last_inner_sync=0.552ms last_drain=0.000ms
+  PASS follower 2 replay batches=3890 records=16402 frames=16394 wal_sync_policy=per-batch wal_syncs=3890 last_batch_records=8 last_apply=0.924ms
+  PASS follower 2 replay apply timing avg_wal_write=0.018ms avg_wal_sync=1.143ms last_wal_write=0.023ms last_wal_sync=0.878ms last_wal_synced_offset=36964672 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=3890 frames=16394 db_syncs=3882 queue_depth=0 errors=0 last_offset=36964672 avg_db_write=0.012ms avg_db_sync=0.916ms avg_shm=0.398ms last_db_write=0.014ms last_db_sync=1.984ms last_shm=0.013ms
+  PASS follower 3 replay batches=3890 records=16402 frames=16394 wal_sync_policy=per-batch wal_syncs=3890 last_batch_records=8 last_apply=1.515ms
+  PASS follower 3 replay apply timing avg_wal_write=0.018ms avg_wal_sync=1.166ms last_wal_write=0.023ms last_wal_sync=1.470ms last_wal_synced_offset=36964672 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=3890 frames=16394 db_syncs=3882 queue_depth=0 errors=0 last_offset=36964672 avg_db_write=0.012ms avg_db_sync=0.914ms avg_shm=0.416ms last_db_write=0.017ms last_db_sync=1.603ms last_shm=0.010ms
+  PASS follower 2 rejected write probe in 0.119ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.086ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 10.47s
+  workload time: 10.02s
+  workload overrun: 0.02s
+  validation time: 0.01s
+  engine: cluster
+  workload: scan-heavy (admin aggregate scans)
+  total ops: 875324
+  ops/sec: 87379.95
+  read ops/sec: 86992.53
+  write ops/sec: 387.42
+  reads: total=871443 point=9628 range=9710 admin_scans=852105
+  writes: total=3881 transfers_ok=0 transfers_skipped=0 orders_created=3646 order_updates=235
+  control: refreshes=0
+  lock/busy conflicts: total=0 point_read=0 range_read=0 transfer_begin=0 transfer_body=0 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.013ms
+  avg range read: 0.084ms
+  avg create order: 3.178ms
+  avg order update: 5.267ms
+  avg admin scan: 0.057ms
+
+All Engines (workload=scan-heavy)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite             77522.43   76921.80     600.64   775819        0     6011     10.01s        0.00s
+  secure             74413.70   73829.67     584.03   744861        0     5846     10.01s        0.01s
+  cluster            87379.95   86992.53     387.42   875324        0     3881     10.02s        0.01s
+
+palisade loadtest mode=release engine=sqlite workload=contention workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile hot-tenant writes and transfers
+→ preparing runtime
+  • workspace /tmp/palisade-loadtest-Dv3sqW
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-Dv3sqW/leader.db
+→ seeding database
+  • security disabled for sqlite engine
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-Dv3sqW/leader.db with 64 initial orders
+→ running workload=contention engine=sqlite workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-Dv3sqW/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 11176
+  PASS audit row count = 17939
+  PASS no negative balances
+  PASS validated 5357 order states
+
+Summary
+  elapsed: 10.44s
+  workload time: 10.09s
+  workload overrun: 0.09s
+  validation time: 0.00s
+  engine: sqlite
+  workload: contention (hot-tenant writes and transfers)
+  total ops: 21337
+  ops/sec: 2115.01
+  read ops/sec: 355.85
+  write ops/sec: 1759.15
+  reads: total=3590 point=1098 range=1099 admin_scans=1393
+  writes: total=17747 transfers_ok=11176 transfers_skipped=0 orders_created=5293 order_updates=1278
+  control: refreshes=0
+  lock/busy conflicts: total=1106 point_read=0 range_read=0 transfer_begin=0 transfer_body=1106 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.020ms
+  avg range read: 0.200ms
+  avg transfer: 0.547ms
+  avg create order: 5.215ms
+  avg order update: 13.645ms
+  avg admin scan: 0.142ms
+
+palisade loadtest mode=release engine=secure workload=contention workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile hot-tenant writes and transfers
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-eM570j
+  • evfs keyfile /tmp/palisade-loadtest-eM570j/evfs.key
+  • sqlshim preload detected
+  • leader db /tmp/palisade-loadtest-eM570j/leader.db
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+✓ seeded database at /tmp/palisade-loadtest-eM570j/leader.db with 64 initial orders
+→ running workload=contention engine=secure workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-eM570j/leader.db
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 9136
+  PASS audit row count = 15933
+  PASS no negative balances
+  PASS validated 5393 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+
+Summary
+  elapsed: 10.45s
+  workload time: 10.06s
+  workload overrun: 0.06s
+  validation time: 0.01s
+  engine: secure
+  workload: contention (hot-tenant writes and transfers)
+  total ops: 19120
+  ops/sec: 1899.66
+  read ops/sec: 335.72
+  write ops/sec: 1563.94
+  reads: total=3379 point=1120 range=1127 admin_scans=1132
+  writes: total=15741 transfers_ok=9136 transfers_skipped=0 orders_created=5329 order_updates=1276
+  control: refreshes=0
+  lock/busy conflicts: total=1023 point_read=0 range_read=0 transfer_begin=0 transfer_body=1023 create_order=0 order_update=0 admin_scan=0
+  avg point read: 0.021ms
+  avg range read: 0.208ms
+  avg transfer: 0.625ms
+  avg create order: 4.499ms
+  avg order update: 12.565ms
+  avg admin scan: 0.176ms
+
+palisade loadtest mode=release engine=cluster workload=contention workers=8 duration=10s seed=0xdeadbeefcafebabe
+profile hot-tenant writes and transfers
+→ preparing runtime
+  • sqlsec /home/adaml/code/palisade/sqlsec/target/release/libsqlsec.so
+  • sqlevfs /home/adaml/code/palisade/sqlevfs/target/release/libsqlevfs.so
+  • workspace /tmp/palisade-loadtest-zRSbMu
+  • evfs keyfile /tmp/palisade-loadtest-zRSbMu/evfs.key
+  • sqlshim preload detected
+  • raft node 1 http://127.0.0.1:41137 (127.0.0.1:41137)
+  • raft node 2 http://127.0.0.1:45757 (127.0.0.1:45757)
+  • raft node 3 http://127.0.0.1:41803 (127.0.0.1:41803)
+  • raft node 1 elected leader
+  • raft cluster ready
+  • leader db /tmp/palisade-loadtest-zRSbMu/leader.db
+  • followers 2
+→ seeding database
+  • defined 8 tenant labels
+  • seed transaction committed
+  • mirrored leader keyring sidecar to followers
+✓ seeded database at /tmp/palisade-loadtest-zRSbMu/leader.db with 64 initial orders
+→ running workload=contention engine=cluster workers=8 duration=10.00s ramp=5.00s seed=0xdeadbeefcafebabe db=/tmp/palisade-loadtest-zRSbMu/leader.db followers=2
+✓ workload complete
+→ validating database and replicas
+✓ validation complete
+
+Validation
+  PASS account count = 192
+  PASS total balance conserved at 1920000
+  PASS transfer row count = 5052
+  PASS audit row count = 6403
+  PASS no negative balances
+  PASS validated 1026 order states
+  PASS evfs ciphertext sanity check passed
+  PASS sqlsec audit metadata ready: configs=3 audit_rows=0
+  PASS raft replicas converged in 0.00s
+  PASS raft submit syncs=6244 records=31239 frames=31207 avg_submit=0.589ms max_submit=9.154ms last_records=9 last_frames=9 last_submit=0.332ms
+  PASS raft leader xSync calls=6277 avg_total=1.424ms avg_inner_sync=0.835ms avg_drain=0.000ms last_total=0.618ms last_inner_sync=0.617ms last_drain=0.000ms
+  PASS follower 2 replay batches=6244 records=31239 frames=31207 wal_sync_policy=per-batch wal_syncs=6244 last_batch_records=9 last_apply=0.695ms
+  PASS follower 2 replay apply timing avg_wal_write=0.020ms avg_wal_sync=1.262ms last_wal_write=0.025ms last_wal_sync=0.650ms last_wal_synced_offset=4099432 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 2 materialization batches=6244 frames=31207 db_syncs=6212 queue_depth=0 errors=0 last_offset=4099432 avg_db_write=0.011ms avg_db_sync=0.838ms avg_shm=0.717ms last_db_write=0.017ms last_db_sync=0.857ms last_shm=0.010ms
+  PASS follower 3 replay batches=6244 records=31239 frames=31207 wal_sync_policy=per-batch wal_syncs=6244 last_batch_records=9 last_apply=1.192ms
+  PASS follower 3 replay apply timing avg_wal_write=0.019ms avg_wal_sync=1.247ms last_wal_write=0.025ms last_wal_sync=1.147ms last_wal_synced_offset=4099432 pending_wal_sync_batches=0 coalesced_wal_syncs=0 avg_sync_batches=1.00 last_sync_batches=1 avg_sync_delay=0.000ms last_sync_delay=0.000ms
+  PASS follower 3 materialization batches=6244 frames=31207 db_syncs=6212 queue_depth=0 errors=0 last_offset=4099432 avg_db_write=0.011ms avg_db_sync=0.863ms avg_shm=0.676ms last_db_write=0.017ms last_db_sync=0.949ms last_shm=0.010ms
+  PASS follower 2 rejected write probe in 0.085ms: attempt to write a readonly database
+  PASS follower 2 local wal residue 0 bytes
+  PASS follower 3 rejected write probe in 0.085ms: attempt to write a readonly database
+  PASS follower 3 local wal residue 0 bytes
+  PASS raft convergence and follower write rejection passed
+
+Summary
+  elapsed: 11.46s
+  workload time: 11.04s
+  workload overrun: 1.04s
+  validation time: 0.01s
+  engine: cluster
+  workload: contention (hot-tenant writes and transfers)
+  total ops: 7232
+  ops/sec: 654.86
+  read ops/sec: 92.45
+  write ops/sec: 562.41
+  reads: total=1021 point=223 range=214 admin_scans=584
+  writes: total=6211 transfers_ok=5052 transfers_skipped=0 orders_created=962 order_updates=197
+  control: refreshes=0
+  lock/busy conflicts: total=262 point_read=0 range_read=0 transfer_begin=0 transfer_body=261 create_order=0 order_update=1 admin_scan=0
+  avg point read: 0.022ms
+  avg range read: 0.064ms
+  avg transfer: 1.616ms
+  avg create order: 6.835ms
+  avg order update: 11.674ms
+  avg admin scan: 0.060ms
+
+All Engines (workload=contention)
+  engine              ops/sec   read/sec  write/sec      ops    locks   writes   workload   validation
+  sqlite              2115.01     355.85    1759.15    21337     1106    17747     10.09s        0.00s
+  secure              1899.66     335.72    1563.94    19120     1023    15741     10.06s        0.01s
+  cluster              654.86      92.45     562.41     7232      262     6211     11.04s        0.01s
+
+All Engines + Workloads
+  elapsed: 189.52s
+  runs: 18
+  total ops: 3935932
+  lock/busy conflicts: 17368

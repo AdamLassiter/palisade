@@ -165,16 +165,29 @@ pub(crate) fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
         }
     }
 
-    t.section("Stub Features (audit / explain policy)");
+    t.section("Audit SQL");
     for stmt in [
-        "ENABLE AUDIT ON users;",
-        "ENABLE AUDIT ON invoices FOR INSERT, UPDATE, DELETE;",
-        "EXPLAIN POLICY ON employees FOR USER = 'alice';",
+        "ENABLE AUDIT ON employees;",
+        "ENABLE AUDIT ON employees FOR INSERT, UPDATE;",
+        "DISABLE AUDIT ON employees;",
     ] {
         match conn.execute_batch(stmt) {
             Ok(()) => t.ok(stmt),
             Err(e) => t.fail(stmt, &e),
         }
+    }
+
+    let audit_enabled: i64 = conn.query_row(
+        "SELECT enabled FROM sec_audit_config WHERE logical_table = 'employees'",
+        [],
+        |r| r.get(0),
+    )?;
+    t.assert_eq("DISABLE AUDIT updates sqlsec config", &audit_enabled, &0i64);
+
+    t.section("Stub Features (explain policy)");
+    match conn.execute_batch("EXPLAIN POLICY ON employees FOR USER = 'alice';") {
+        Ok(()) => t.ok("EXPLAIN POLICY ON employees FOR USER = 'alice';"),
+        Err(e) => t.fail("EXPLAIN POLICY ON employees FOR USER = 'alice';", &e),
     }
 
     t.section("Normal SQL Passthrough");

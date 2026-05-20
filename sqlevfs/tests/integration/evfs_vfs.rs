@@ -10,7 +10,9 @@ use crate::common::{sqlite_api_is_available, test_db_path};
 #[test_log::test]
 fn test_end_to_end_database_operations() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;
@@ -80,7 +82,9 @@ fn test_end_to_end_database_operations() -> anyhow::Result<()> {
 #[test_log::test]
 fn test_reopening_encrypted_database() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;
@@ -155,7 +159,9 @@ fn test_reopening_encrypted_database() -> anyhow::Result<()> {
 #[test_log::test]
 fn test_large_data_encryption() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;
@@ -231,7 +237,9 @@ fn test_large_data_encryption() -> anyhow::Result<()> {
 #[test_log::test]
 fn test_wrong_key_fails_to_decrypt() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;
@@ -288,7 +296,9 @@ fn test_wrong_key_fails_to_decrypt() -> anyhow::Result<()> {
 #[test_log::test]
 fn test_keyring_persistence_via_sidecar() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;
@@ -330,7 +340,9 @@ fn test_keyring_persistence_via_sidecar() -> anyhow::Result<()> {
 #[ignore]
 fn test_concurrent_access() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     use std::thread;
@@ -393,7 +405,9 @@ fn test_concurrent_access() -> anyhow::Result<()> {
 #[test_log::test]
 fn test_wal_journal_mode_enabled_with_evfs() -> anyhow::Result<()> {
     if !sqlite_api_is_available() {
-        eprintln!("skipping: sqlite extension API pointers are not initialized in this build");
+        palisade_log::warn(
+            "skipping: sqlite extension API pointers are not initialized in this build",
+        );
         return Ok(());
     }
     let temp_dir = TempDir::new()?;

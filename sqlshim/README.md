@@ -19,6 +19,18 @@ export LD_PRELOAD=/path/to/libsqlshim.so
 ./your_sqlite_app
 ```
 
+## sqlsec convenience syntax
+
+When the `sqlsec` extension is loaded, `sqlshim` rewrites convenience SQL into `sec_*` function calls. Audit-related forms include:
+
+```sql
+ENABLE AUDIT ON employees;
+ENABLE AUDIT ON employees FOR INSERT, UPDATE, DELETE;
+DISABLE AUDIT ON employees;
+```
+
+These rewrite to `sec_audit_enable`, `sec_audit_disable`, and `sec_audit_configure`. `SELECT` audit is not enabled by these forms; `sqlsec` currently audits successful secured writes.
+
 ## Notes
 
 - Rewriting SQL is best-effort: some statements, pragmas, and edge cases may be intentionally left untouched.

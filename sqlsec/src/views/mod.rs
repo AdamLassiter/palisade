@@ -30,9 +30,7 @@ fn get_physical_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()?;
 
     if cols.is_empty() {
-        return Err(invalid(format!(
-            "table '{table}' does not exist",
-        )));
+        return Err(invalid(format!("table '{table}' does not exist",)));
     }
 
     Ok(cols)

@@ -41,11 +41,7 @@ fn attr_req(input: &str) -> IResult<&str, AttrReq> {
 
 fn clause(input: &str) -> IResult<&str, Clause> {
     alt((
-        delimited(
-            char('('),
-            separated_list1(char('|'), attr_req),
-            char(')'),
-        ),
+        delimited(char('('), separated_list1(char('|'), attr_req), char(')')),
         map(attr_req, |r| vec![r]),
     ))
     .parse(input)
@@ -77,7 +73,6 @@ pub fn parse(expr: &str) -> Result<Label, String> {
         Err(e) => Err(format!("parse error: {e}")),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -25,6 +25,16 @@ fn create_delete_trigger(conn: &Connection, table: &SecTable) -> Result<(), rusq
 
     let pk_cols = pk_cols(conn, physical)?;
     let pk_where_old = pk_where_old(&pk_cols);
+    let pk_json_old = pk_json_expr("OLD", &pk_cols);
+    let audit_success = audit_event_expr(
+        table,
+        "DELETE",
+        "success",
+        &pk_json_old,
+        "NULL",
+        &format!("OLD.\"{row_label_col}\""),
+        "NULL",
+    );
 
     let refesh_guard = refresh_guard();
 
@@ -39,6 +49,8 @@ fn create_delete_trigger(conn: &Connection, table: &SecTable) -> Result<(), rusq
             DELETE FROM "{physical}"
             WHERE {pk_where_old}
               AND sec_label_visible("{row_label_col}");
+
+            {audit_success}
         END;
         "#
     );
@@ -65,11 +77,22 @@ fn create_update_trigger(
 
     let pk_cols = pk_cols(conn, physical)?;
     let pk_where_old = pk_where_old(&pk_cols);
+    let pk_json_new = pk_json_expr("NEW", &pk_cols);
+    let changed_columns_json = changed_columns_json_expr(visible_cols);
 
     let refresh_guard = refresh_guard();
     let update_pk_guard = update_pk_guard(pk_cols);
     let update_label_guard = update_label_guard(row_label_col);
     let column_policy_guards = column_update_policy_guards(conn, logical)?;
+    let audit_success = audit_event_expr(
+        table,
+        "UPDATE",
+        "success",
+        &pk_json_new,
+        &changed_columns_json,
+        &format!("NEW.\"{row_label_col}\""),
+        "NULL",
+    );
 
     let update_trigger = format!(
         r#"
@@ -86,6 +109,8 @@ fn create_update_trigger(
             SET {update_sets}
             WHERE {pk_where_old}
               AND sec_label_visible("{row_label_col}");
+
+            {audit_success}
         END;
         "#
     );
@@ -141,6 +166,17 @@ fn create_insert_trigger(
     let refesh_guard = refresh_guard();
     let implicit_label_guard = implicit_label_guard(logical, row_label_col);
     let label_visible_guard = label_visible_guard(row_label_col);
+    let pk_cols = pk_cols(conn, physical)?;
+    let pk_json_new = pk_json_expr("NEW", &pk_cols);
+    let audit_success = audit_event_expr(
+        table,
+        "INSERT",
+        "success",
+        &pk_json_new,
+        "NULL",
+        &row_label_assignment,
+        "NULL",
+    );
 
     let insert_trigger = format!(
         r#"
@@ -157,6 +193,8 @@ fn create_insert_trigger(
                 {row_label_assignment},
                 {insert_vals}
             );
+
+            {audit_success}
         END;
         "#
     );
@@ -266,10 +304,7 @@ fn column_update_policy_guards(
     // Generate guards for columns that have a policy AND the user doesn't satisfy it
     let protected_columns = all_columns
         .iter()
-        .filter(|c| {
-            c.update_label_id.is_some() 
-                && !is_visible_conn(conn, c.update_label_id, &ctx)
-        });
+        .filter(|c| c.update_label_id.is_some() && !is_visible_conn(conn, c.update_label_id, &ctx));
 
     for col in protected_columns {
         let col_name = &col.column_name;
@@ -284,4 +319,70 @@ fn column_update_policy_guards(
     }
 
     Ok(guards.join("\n"))
+}
+
+fn audit_event_expr(
+    table: &SecTable,
+    operation: &str,
+    outcome: &str,
+    row_pk_json: &str,
+    changed_columns_json: &str,
+    row_label_id: &str,
+    error: &str,
+) -> String {
+    format!(
+        "SELECT sec_audit_event({}, {}, {}, {}, {row_pk_json}, {changed_columns_json}, {row_label_id}, {error});",
+        sql_string_literal(&table.logical_name),
+        sql_string_literal(&table.physical_name),
+        sql_string_literal(operation),
+        sql_string_literal(outcome),
+    )
+}
+
+fn pk_json_expr(prefix: &str, pk_cols: &[String]) -> String {
+    let args = pk_cols
+        .iter()
+        .flat_map(|col| [sql_string_literal(col), format!("{prefix}.\"{col}\"")])
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("json_object({args})")
+}
+
+fn changed_columns_json_expr(cols: &[&str]) -> String {
+    if cols.is_empty() {
+        return "'[]'".to_string();
+    }
+
+    let pieces = cols
+        .iter()
+        .map(|col| {
+            format!(
+                "CASE WHEN OLD.\"{col}\" IS NOT NEW.\"{col}\" THEN {} ELSE '' END",
+                sql_string_literal(&format!(",\"{}\"", json_string_escape(col)))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" || ");
+
+    format!("'[' || substr(({pieces}), 2) || ']'")
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn json_string_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out
 }

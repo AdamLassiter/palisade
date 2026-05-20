@@ -1,0 +1,20 @@
+------------------------------------------------------------
+[Audit disable/configure]
+disabled
+--------
+1       
+after_disabled
+--------------
+0             
+enabled
+-------
+1      
+context_off
+-----------
+1          
+update_off
+----------
+1         
+operation  outcome  context_json
+---------  -------  ------------
+INSERT     success  {}

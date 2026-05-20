@@ -76,6 +76,22 @@ pub fn register_table(
         ],
     )?;
 
+    conn.execute(
+        r#"
+        INSERT OR IGNORE INTO sec_audit_config (
+            logical_table,
+            enabled,
+            audit_insert,
+            audit_update,
+            audit_delete,
+            include_context,
+            include_changed_columns
+        )
+        VALUES (?1, 1, 1, 1, 1, 1, 1)
+        "#,
+        [logical],
+    )?;
+
     for col in cols {
         conn.execute(
             r#"

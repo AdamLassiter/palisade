@@ -136,11 +136,55 @@ fn validate_database(
         report.ok("evfs ciphertext sanity check passed");
     }
 
+    if cfg.engine.uses_security() {
+        validate_sqlsec_audit_metadata(cfg, runtime, report)?;
+    }
+
     if cfg.engine.uses_cluster() {
         validate_cluster(cfg, runtime, actual, report)?;
         report.ok("raft convergence and follower write rejection passed");
     }
 
+    Ok(())
+}
+
+fn validate_sqlsec_audit_metadata(
+    cfg: &Config,
+    runtime: &Runtime,
+    report: &mut ValidationReport,
+) -> AppResult<()> {
+    let conn = open_validation_conn(cfg, runtime, true)?;
+    let audit_config_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sec_audit_config
+         WHERE logical_table IN ('accounts', 'orders', 'transfers')
+           AND enabled = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    if audit_config_count != 3 {
+        return Err(format!(
+            "sqlsec audit config mismatch: expected 3 enabled secured tables, got {audit_config_count}"
+        )
+        .into());
+    }
+
+    let audit_rows: i64 = conn.query_row("SELECT COUNT(*) FROM sec_audit_log", [], |r| r.get(0))?;
+    let leaked_secret_notes: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sec_audit_log
+         WHERE COALESCE(row_pk_json, '') ||
+               COALESCE(changed_columns_json, '') ||
+               context_json ||
+               COALESCE(error, '') LIKE '%secret-note-%'",
+        [],
+        |r| r.get(0),
+    )?;
+    if leaked_secret_notes != 0 {
+        return Err("sqlsec audit log leaked secret_note marker".into());
+    }
+
+    report.ok(format!(
+        "sqlsec audit metadata ready: configs={audit_config_count} audit_rows={audit_rows}"
+    ));
     Ok(())
 }
 

@@ -3,6 +3,7 @@ mod create_policy;
 mod create_secure_view;
 mod define_label;
 mod define_level;
+mod disable_audit;
 mod drop_policy;
 mod enable_audit;
 mod explain_policy;
@@ -41,9 +42,10 @@ pub static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(|| {
         Box::new(set_column_security::SetColumnSecurityPlugin),
         Box::new(set_context::SetContextPlugin),
     ]);
-    
+
     #[cfg(feature = "sqlaudit")]
     plugins.extend::<Vec<Box<dyn CustomPlugin + Send + Sync + 'static>>>(vec![
+        Box::new(disable_audit::DisableAuditPlugin),
         Box::new(enable_audit::EnableAuditPlugin),
     ]);
 

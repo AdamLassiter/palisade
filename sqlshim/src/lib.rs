@@ -137,4 +137,21 @@ mod tests {
         assert!(rewritten.contains("sec_define_label"));
         assert!(rewritten.contains("role=admin"));
     }
+
+    #[test]
+    fn test_rewrite_enable_audit() {
+        let sql = "ENABLE AUDIT ON docs FOR INSERT, UPDATE;";
+        let rewritten = parse_and_rewrite(sql).unwrap();
+        assert!(rewritten.contains("sec_audit_enable('docs')"));
+        assert!(rewritten.contains("sec_audit_configure('docs', 'audit_insert', 1)"));
+        assert!(rewritten.contains("sec_audit_configure('docs', 'audit_update', 1)"));
+        assert!(rewritten.contains("sec_audit_configure('docs', 'audit_delete', 0)"));
+    }
+
+    #[test]
+    fn test_rewrite_disable_audit() {
+        let sql = "DISABLE AUDIT ON docs;";
+        let rewritten = parse_and_rewrite(sql).unwrap();
+        assert!(rewritten.contains("sec_audit_disable('docs')"));
+    }
 }

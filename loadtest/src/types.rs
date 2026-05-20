@@ -343,11 +343,7 @@ pub(crate) struct Oracle {
 
 impl Oracle {
     pub(crate) fn new() -> Self {
-        let mut balances = Vec::with_capacity(TENANTS * ACCOUNTS_PER_TENANT + 1);
-        balances.push(0);
-        for _ in 0..TENANTS * ACCOUNTS_PER_TENANT {
-            balances.push(INITIAL_BALANCE);
-        }
+        let balances = vec![INITIAL_BALANCE; TENANTS * ACCOUNTS_PER_TENANT + 1];
 
         Self {
             balances,

@@ -53,5 +53,6 @@ grouped under each workload. The default is `workloads`.
 - no negative balances
 - expected order terminal states
 - `sqlsec` visibility behavior for user/admin/ops contexts
+- `sqlsec` audit metadata initialization and audit-log non-leakage checks
 - encrypted-file plaintext leakage checks for EVFS-backed modes
 - leader/follower convergence and follower write rejection in cluster mode
