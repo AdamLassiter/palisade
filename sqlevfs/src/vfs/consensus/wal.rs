@@ -239,9 +239,11 @@ impl WalFileState {
     }
 }
 
-// -- In-memory log storage --------------------------------------------
-// NOTE: Replace with a persistent implementation (e.g. backed by a
-// separate RocksDB / sled instance) before running in production.
+// -- Raft log storage --------------------------------------------------
+//
+// Without `storage_path` this behaves as an in-memory test store. Cluster
+// initialization passes a node-local storage path so votes, committed indexes,
+// log entries, memberships, and snapshots survive process restart.
 
 #[derive(Default)]
 pub struct WalLogStore {

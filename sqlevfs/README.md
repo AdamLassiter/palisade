@@ -66,10 +66,15 @@ Current API shape (low-level):
 
 Important limitations right now:
 
-- Log/state storage is in-memory (`WalLogStore`), so crash durability is not production-ready.
+- Log/state storage is persisted when Raft is initialized with a `storage_path`.
+  The on-disk state includes votes, committed index metadata, log entries,
+  membership, snapshots, and the highest committed WAL offset. Omitting
+  `storage_path` intentionally leaves the node in in-memory test mode.
 - Readable follower replicas depend on WAL-record replay; checkpointed main-DB
   snapshotting is not wired yet.
-- SQLite checkpoint -> Raft snapshot integration is not wired yet.
+- SQLite checkpoint -> Raft snapshot integration is still conservative; explicit
+  Raft snapshots can compact replicated log state, but checkpoint orchestration
+  remains an operational boundary.
 - Backpressure is not enforced yet (writer can outpace replication).
 - `EvfsBuilder` currently registers encryption-only mode (`raft: None`); Raft mode uses lower-level registration APIs.
 

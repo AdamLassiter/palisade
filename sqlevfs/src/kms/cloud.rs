@@ -197,7 +197,7 @@ mod tests {
 
     use super::*;
 
-    fn spawn_mock_kms_server() -> (String, MockState) {
+    fn spawn_mock_kms_server() -> Option<(String, MockState)> {
         #[derive(Clone, Default)]
         struct Inner {
             generate_calls: Arc<AtomicUsize>,
@@ -294,7 +294,19 @@ mod tests {
             Ok((headers, rest))
         }
 
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::AddrNotAvailable
+                ) =>
+            {
+                eprintln!("skipping cloud KMS mock-server test: {err}");
+                return None;
+            }
+            Err(err) => panic!("failed to bind cloud KMS mock server: {err}"),
+        };
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{}", addr);
 
@@ -407,7 +419,7 @@ mod tests {
             }
         });
 
-        (
+        Some((
             url,
             MockState {
                 generate_calls: out.generate_calls,
@@ -416,7 +428,7 @@ mod tests {
                 decrypt_map: out.decrypt_map,
                 gdk_plaintext_len: out.gdk_plaintext_len,
             },
-        )
+        ))
     }
 
     #[derive(Clone)]
@@ -456,7 +468,9 @@ mod tests {
 
     #[test]
     fn get_kek_is_cached_after_first_call() {
-        let (endpoint, state) = spawn_mock_kms_server();
+        let Some((endpoint, state)) = spawn_mock_kms_server() else {
+            return;
+        };
         let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
 
         let (id1, k1) = p.get_kek().unwrap();
@@ -476,7 +490,9 @@ mod tests {
 
     #[test]
     fn get_kek_by_id_hits_cache_when_id_matches() {
-        let (endpoint, state) = spawn_mock_kms_server();
+        let Some((endpoint, state)) = spawn_mock_kms_server() else {
+            return;
+        };
         let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
 
         let (id, k1) = p.get_kek().unwrap();
@@ -489,7 +505,9 @@ mod tests {
 
     #[test]
     fn get_kek_by_id_calls_decrypt_when_id_not_cached() {
-        let (endpoint, state) = spawn_mock_kms_server();
+        let Some((endpoint, state)) = spawn_mock_kms_server() else {
+            return;
+        };
         let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
 
         // Put something into the decrypt map so decrypt returns non-empty.
@@ -509,7 +527,9 @@ mod tests {
 
     #[test]
     fn wrap_and_unwrap_roundtrip() {
-        let (endpoint, state) = spawn_mock_kms_server();
+        let Some((endpoint, state)) = spawn_mock_kms_server() else {
+            return;
+        };
         let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));
 
         let pt = b"top secret bytes".to_vec();
@@ -523,7 +543,9 @@ mod tests {
 
     #[test]
     fn generate_data_key_errors_on_wrong_length_key() {
-        let (endpoint, state) = spawn_mock_kms_server();
+        let Some((endpoint, state)) = spawn_mock_kms_server() else {
+            return;
+        };
         state.set_generate_plaintext_len(Some(31)); // not 32
 
         let p = CloudKmsProvider::new("alias/test".to_string(), Some(endpoint));

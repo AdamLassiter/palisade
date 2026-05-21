@@ -47,6 +47,21 @@ impl Scenario {
         }
     }
 
+    pub(crate) fn tags(self) -> &'static [&'static str] {
+        match self {
+            Self::FollowerKill => &["ci", "durability"],
+            Self::LeaderKill => &["known-gap", "durability"],
+            Self::WholeProcessRestart => &["known-gap", "durability"],
+            Self::KeyLoss => &["ci", "security"],
+            Self::SidecarCorrupt => &["ci", "security"],
+            Self::All => &[],
+        }
+    }
+
+    pub(crate) fn has_tag(self, tag: &str) -> bool {
+        self.tags().contains(&tag)
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::FollowerKill => "follower-kill",

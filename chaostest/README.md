@@ -16,7 +16,12 @@ Run it through the top-level wrapper:
 - `--workers N`: workload workers, default `4`
 - `--seed N`: deterministic seed
 - `--keep-artifacts`: retain workspace, node logs, and report JSON
-- `--include-known-gaps`: run scenarios that are expected to expose unfinished durability work
+- `--include-known-gaps`: include longer durability restart scenarios that are excluded from the short default matrix
+- `--tags ci,durability,security,known-gap`: run scenarios matching any tag
+- `--ci`: shorthand for `--tags ci`
+- `--nightly`: shorthand for durability and security tagged scenarios
+- `--report-json PATH`: write machine-readable scenario reports
+- `--report-junit PATH`: write JUnit XML reports
 - `--cluster-follower-wal-sync per-batch|coalesced`: pass follower WAL sync policy into Raft init
 
 ## Architecture
@@ -31,15 +36,15 @@ The child protocol currently supports status, seed, workload, local validation, 
 
 - `PASS`: the scenario validated the expected safety property.
 - `FAIL`: an unexpected error or invariant failure occurred.
-- `KNOWN-GAP`: the scenario ran far enough to expose durability work that is not implemented yet.
+- `KNOWN-GAP`: the scenario exposed an explicitly declared unsafe or incomplete state.
 
 Current classifications:
 
 - `key-loss`: expected `PASS`.
 - `sidecar-corrupt`: expected `PASS`.
-- `follower-kill`: currently reports `KNOWN-GAP` after restart because follower replay/materialization does not recover from persisted Raft state.
-- `leader-kill`: known gap until leader election/recovery is backed by persistent Raft storage.
-- `whole-process-restart`: known gap until Raft state survives full process restart.
+- `follower-kill`: expected `PASS`; restarts recover node-local persisted Raft state and then replay/materialize missing committed records.
+- `leader-kill`: expected `PASS` when run with `--include-known-gaps`; it remains tagged as a durability scenario for explicit coverage.
+- `whole-process-restart`: expected `PASS` when run with `--include-known-gaps`; it verifies every node can rebuild Raft state from disk.
 
 ## Useful Smoke Tests
 
@@ -55,3 +60,9 @@ When `--keep-artifacts` is set, inspect the retained workspace for:
 - `node*.stdout.log`: JSON protocol responses
 - `node*.stderr.log`: child process diagnostics
 - `chaostest-report.json`: machine-readable scenario report
+
+CI-friendly run:
+
+```sh
+./run-chaostest --ci --duration-secs 1 --workers 1 --report-json /tmp/chaostest.json --report-junit /tmp/chaostest.xml
+```

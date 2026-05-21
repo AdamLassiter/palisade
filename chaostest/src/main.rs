@@ -115,10 +115,31 @@ mod tests {
             scenario: Scenario::LeaderKill,
             status: ScenarioStatus::KnownGap,
             elapsed_ms: 10,
+            seed: 42,
+            tags: vec!["known-gap".to_string()],
+            artifact_dir: None,
+            failure_point: Some("leader-kill".to_string()),
+            expected: "pass-or-known-gap".to_string(),
             steps: vec![ScenarioStep::known_gap("gap")],
             error: Some("no persistent raft storage".to_string()),
         };
         let json = serde_json::to_string(&report).expect("json");
         assert!(json.contains("known-gap"));
+    }
+
+    #[test]
+    fn config_parses_tag_and_report_options() {
+        let cfg = Config::parse(vec![
+            "--tags".into(),
+            "ci,security".into(),
+            "--report-json".into(),
+            "report.json".into(),
+            "--report-junit".into(),
+            "report.xml".into(),
+        ])
+        .expect("parse");
+        assert_eq!(cfg.tags, vec!["ci", "security"]);
+        assert_eq!(cfg.report_json.as_deref(), Some("report.json"));
+        assert_eq!(cfg.report_junit.as_deref(), Some("report.xml"));
     }
 }

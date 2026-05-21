@@ -116,6 +116,100 @@ async fn test_raft_replication_single_node_commits_in_order() -> anyhow::Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_raft_storage_recovers_committed_entries_after_restart() -> anyhow::Result<()> {
+    let temp = tempfile::TempDir::new()?;
+    let storage_path = temp.path().join("node1.evfs-raft-state.json");
+
+    let first_applied: Arc<Mutex<Vec<(i64, u32, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let first_applied_clone = first_applied.clone();
+    let first = RaftHandle::start(
+        1,
+        HashMap::new(),
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
+                first_applied_clone
+                    .lock()
+                    .expect("apply lock poisoned")
+                    .push((wal_offset, page_no, data));
+            }
+            Ok(())
+        },
+        None,
+        None,
+        Some(storage_path.clone()),
+    )
+    .await?;
+    wait_until(Duration::from_secs(5), || first.is_leader()).await?;
+
+    let entry = (32_i64, 9_u32, vec![0x33, 0x44, 0x55]);
+    first
+        .submit_frame(entry.0, entry.1, entry.2.clone())
+        .await?;
+    wait_until(Duration::from_secs(5), || {
+        first_applied.lock().expect("apply lock poisoned").len() == 1
+    })
+    .await?;
+    assert_eq!(first.committed_wal_offset(), entry.0 as u64);
+    first.shutdown().await?;
+    drop(first);
+
+    let recovered_applied: Arc<Mutex<Vec<(i64, u32, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let recovered_applied_clone = recovered_applied.clone();
+    let recovered = RaftHandle::start(
+        1,
+        HashMap::new(),
+        move |batch| {
+            for (wal_offset, page_no, data) in frames_from_batch(batch) {
+                recovered_applied_clone
+                    .lock()
+                    .expect("recovered apply lock poisoned")
+                    .push((wal_offset, page_no, data));
+            }
+            Ok(())
+        },
+        None,
+        None,
+        Some(storage_path),
+    )
+    .await?;
+
+    wait_until(Duration::from_secs(5), || {
+        recovered_applied
+            .lock()
+            .expect("recovered apply lock poisoned")
+            .contains(&entry)
+    })
+    .await?;
+    assert_eq!(recovered.committed_wal_offset(), entry.0 as u64);
+    recovered.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_raft_storage_rejects_corrupt_state() -> anyhow::Result<()> {
+    let temp = tempfile::TempDir::new()?;
+    let storage_path = temp.path().join("node1.evfs-raft-state.json");
+    std::fs::write(&storage_path, b"not-json")?;
+
+    let result = RaftHandle::start(
+        1,
+        HashMap::new(),
+        |_| Ok(()),
+        None,
+        None,
+        Some(storage_path),
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("corrupt state must fail closed");
+    };
+
+    assert!(err.to_string().contains("failed to open raft storage"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_raft_replication_from_one_instance_to_another() -> anyhow::Result<()> {
     use tokio::sync::mpsc;
 

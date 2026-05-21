@@ -82,8 +82,7 @@ It reports:
 
 It currently exercises:
 
-- follower process kill and restart, reported as a durability gap until follower restart can recover persisted Raft state
-- leader kill and whole-process restart as explicit known-gap scenarios
+- follower process kill/restart, leader restart, and whole-process restart using persisted Raft state
 - EVFS key loss and sidecar corruption fail-closed checks
 - aggregate invariants, sqlsec audit non-leakage, ciphertext sanity, replay/materialization offsets, and follower write rejection where the scenario reaches validation
 
@@ -115,6 +114,12 @@ To run the test harness application:
 
 ```sh
 ./run-lazytest
+```
+
+To run all Rust tests with each crate's required SQLite feature set:
+
+```sh
+./run-workspace-tests
 ```
 
 To run a distributed replicated cluster harness:
@@ -214,12 +219,31 @@ Defaults are debug mode, `scenario=follower-kill`, `duration=5s`, `workers=4`, a
 
 Scenarios:
 
-- `follower-kill`: kills a follower process, continues writes, restarts it, then waits for replay/materialization convergence. With the current in-memory Raft storage this is reported as `KNOWN-GAP` and includes replay offsets.
+- `follower-kill`: kills a follower process, continues writes, restarts it, then waits for replay/materialization convergence using node-local persisted Raft state.
 - `key-loss`: replaces the EVFS key and verifies the encrypted DB fails closed.
 - `sidecar-corrupt`: corrupts the EVFS keyring sidecar and verifies the DB fails closed.
-- `leader-kill` and `whole-process-restart`: runnable with `--include-known-gaps`.
+- `leader-kill` and `whole-process-restart`: runnable with `--include-known-gaps` so CI defaults stay short while durability restart scenarios remain explicit.
 - `all`: runs the default pass/gap matrix.
 
 Use `--keep-artifacts` to retain per-node stdout/stderr logs and `chaostest-report.json`.
 
 More detail lives in [`chaostest/README.md`](chaostest/README.md).
+
+## Capability Matrix
+
+| Capability | `sqlite` | `secure` | `cluster` |
+| --- | --- | --- | --- |
+| Main DB page encryption | No | Yes, via `sqlevfs` pages 2+ | Yes, per node via `sqlevfs` |
+| Row/column policy enforcement | No | Yes, via `sqlsec` views/triggers | Yes, on every node using the secured schema |
+| Audit metadata | No | Yes, successful secured writes | Yes, replicated with the database workload |
+| Replication | No | No | Yes, Raft WAL replication |
+| Follower write rejection | N/A | N/A | Yes, followers refuse leader-only write locks |
+| Process restart recovery | SQLite defaults | EVFS keyring + SQLite recovery | Persisted Raft votes/log/membership/snapshot/offset state |
+| Backup/restore | SQLite-native only | Encrypted EVFS backup API | Restore DB content, then validate/rebuild cluster state |
+| Key rotation | External | Backup KEK rotation; full DEK replacement through restore | Same, per node/workspace |
+| Known limitations | No Palisade controls | Page 1 plaintext; temp files out of scope | Checkpoint-to-snapshot orchestration is conservative |
+
+Architecture, durability, security operations, and threat-model details live in
+[`docs/architecture.md`](docs/architecture.md), [`docs/durability.md`](docs/durability.md),
+[`docs/security-operations.md`](docs/security-operations.md), and
+[`docs/threat-model.md`](docs/threat-model.md).

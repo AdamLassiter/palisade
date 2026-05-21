@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = [
+    "chaostest",
+    "lazytest",
+    "loadtest",
+    "palisade-log",
+    "sqlevfs",
+    "sqlsec",
+    "sqlshim",
+]
+
+[workspace.package]
+edition = "2024"

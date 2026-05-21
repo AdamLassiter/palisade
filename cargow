@@ -42,8 +42,7 @@ else
     export RUST_LIB_BACKTRACE=
 fi
 
-# Find all directories with Cargo.toml, including the root if present
-DIRS=$(find . -name Cargo.toml -exec dirname {} \; | sort -u)
+DIRS=$(find . -mindepth 2 -name Cargo.toml -exec dirname {} \; | sort -u)
 
 for dir in $DIRS; do
     echo "🚀 Running 'cargo $CARGO_CMD $*' in $dir"

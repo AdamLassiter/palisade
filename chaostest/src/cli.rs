@@ -12,6 +12,9 @@ pub(crate) struct Config {
     pub(crate) keep_artifacts: bool,
     pub(crate) include_known_gaps: bool,
     pub(crate) wal_sync: FollowerWalSync,
+    pub(crate) tags: Vec<String>,
+    pub(crate) report_json: Option<String>,
+    pub(crate) report_junit: Option<String>,
 }
 
 impl Default for Config {
@@ -25,6 +28,9 @@ impl Default for Config {
             keep_artifacts: false,
             include_known_gaps: false,
             wal_sync: FollowerWalSync::PerBatch,
+            tags: Vec::new(),
+            report_json: None,
+            report_junit: None,
         }
     }
 }
@@ -68,6 +74,34 @@ impl Config {
                 }
                 "--keep-artifacts" => cfg.keep_artifacts = true,
                 "--include-known-gaps" => cfg.include_known_gaps = true,
+                "--tags" => {
+                    i += 1;
+                    cfg.tags = args
+                        .get(i)
+                        .ok_or("missing value for --tags")?
+                        .split(',')
+                        .filter(|tag| !tag.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                }
+                "--ci" => cfg.tags = vec!["ci".to_string()],
+                "--nightly" => cfg.tags = vec!["durability".to_string(), "security".to_string()],
+                "--report-json" => {
+                    i += 1;
+                    cfg.report_json = Some(
+                        args.get(i)
+                            .ok_or("missing value for --report-json")?
+                            .clone(),
+                    );
+                }
+                "--report-junit" => {
+                    i += 1;
+                    cfg.report_junit = Some(
+                        args.get(i)
+                            .ok_or("missing value for --report-junit")?
+                            .clone(),
+                    );
+                }
                 "--cluster-follower-wal-sync" => {
                     i += 1;
                     let value = args
@@ -95,5 +129,10 @@ fn print_help() {
     println!("  --seed N");
     println!("  --keep-artifacts");
     println!("  --include-known-gaps");
+    println!("  --tags ci,durability,security,known-gap");
+    println!("  --ci");
+    println!("  --nightly");
+    println!("  --report-json PATH");
+    println!("  --report-junit PATH");
     println!("  --cluster-follower-wal-sync per-batch|coalesced");
 }

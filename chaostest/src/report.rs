@@ -7,6 +7,16 @@ pub(crate) struct ScenarioReport {
     pub(crate) scenario: Scenario,
     pub(crate) status: ScenarioStatus,
     pub(crate) elapsed_ms: u64,
+    #[serde(default)]
+    pub(crate) seed: u64,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    #[serde(default)]
+    pub(crate) artifact_dir: Option<String>,
+    #[serde(default)]
+    pub(crate) failure_point: Option<String>,
+    #[serde(default)]
+    pub(crate) expected: String,
     pub(crate) steps: Vec<ScenarioStep>,
     pub(crate) error: Option<String>,
 }
@@ -62,6 +72,44 @@ pub(crate) fn print_summary(reports: &[ScenarioReport]) {
             report.elapsed_ms as f64 / 1000.0
         );
     }
+}
+
+pub(crate) fn junit_xml(reports: &[ScenarioReport]) -> String {
+    let failures = reports
+        .iter()
+        .filter(|report| matches!(report.status, ScenarioStatus::Fail))
+        .count();
+    let mut out = format!(
+        "<testsuite name=\"chaostest\" tests=\"{}\" failures=\"{}\">\n",
+        reports.len(),
+        failures
+    );
+    for report in reports {
+        out.push_str(&format!(
+            "  <testcase name=\"{}\" time=\"{:.3}\">",
+            escape_xml(report.scenario.as_str()),
+            report.elapsed_ms as f64 / 1000.0
+        ));
+        match report.status {
+            ScenarioStatus::Pass => {}
+            ScenarioStatus::KnownGap => out.push_str("<skipped message=\"known gap\"/>"),
+            ScenarioStatus::Fail => out.push_str(&format!(
+                "<failure>{}</failure>",
+                escape_xml(report.error.as_deref().unwrap_or("failed"))
+            )),
+        }
+        out.push_str("</testcase>\n");
+    }
+    out.push_str("</testsuite>\n");
+    out
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn status_label(status: &ScenarioStatus) -> &'static str {

@@ -11,7 +11,14 @@ use crate::{
     cli::Config,
     cluster::ClusterSupervisor,
     db::make_node_configs,
-    report::{ScenarioReport, ScenarioStatus, ScenarioStep, print_scenario_report, print_summary},
+    report::{
+        ScenarioReport,
+        ScenarioStatus,
+        ScenarioStep,
+        junit_xml,
+        print_scenario_report,
+        print_summary,
+    },
     types::{AppResult, LibPaths, NodeConfig, Scenario},
     util::{evfs_keyring_path, node_artifacts, try_open_evfs_db},
 };
@@ -91,7 +98,7 @@ impl Supervisor {
                 self.workspace_path.display()
             ),
         );
-        for scenario in self.cfg.scenario.runnable(self.cfg.include_known_gaps) {
+        for scenario in self.selected_scenarios() {
             self.prepare_scenario_workspace(scenario)?;
             let report = self.run_one(scenario);
             print_scenario_report(&report);
@@ -103,6 +110,17 @@ impl Supervisor {
             .reports
             .iter()
             .any(|r| matches!(r.status, ScenarioStatus::Fail)))
+    }
+
+    fn selected_scenarios(&self) -> Vec<Scenario> {
+        self.cfg
+            .scenario
+            .runnable(self.cfg.include_known_gaps)
+            .into_iter()
+            .filter(|scenario| {
+                self.cfg.tags.is_empty() || self.cfg.tags.iter().any(|tag| scenario.has_tag(tag))
+            })
+            .collect()
     }
 
     fn prepare_scenario_workspace(&mut self, scenario: Scenario) -> AppResult<()> {
@@ -138,6 +156,11 @@ impl Supervisor {
                 scenario,
                 status,
                 elapsed_ms: started.elapsed().as_millis() as u64,
+                seed: self.cfg.seed,
+                tags: scenario.tags().iter().map(|tag| tag.to_string()).collect(),
+                artifact_dir: Some(self.workspace_path.display().to_string()),
+                failure_point: Some(scenario.as_str().to_string()),
+                expected: expected_result(scenario).to_string(),
                 steps,
                 error: None,
             },
@@ -149,6 +172,11 @@ impl Supervisor {
                     scenario,
                     status: ScenarioStatus::KnownGap,
                     elapsed_ms: started.elapsed().as_millis() as u64,
+                    seed: self.cfg.seed,
+                    tags: scenario.tags().iter().map(|tag| tag.to_string()).collect(),
+                    artifact_dir: Some(self.workspace_path.display().to_string()),
+                    failure_point: Some(scenario.as_str().to_string()),
+                    expected: expected_result(scenario).to_string(),
                     steps,
                     error: Some(err.to_string()),
                 }
@@ -157,6 +185,11 @@ impl Supervisor {
                 scenario,
                 status: ScenarioStatus::Fail,
                 elapsed_ms: started.elapsed().as_millis() as u64,
+                seed: self.cfg.seed,
+                tags: scenario.tags().iter().map(|tag| tag.to_string()).collect(),
+                artifact_dir: Some(self.workspace_path.display().to_string()),
+                failure_point: Some(scenario.as_str().to_string()),
+                expected: expected_result(scenario).to_string(),
                 steps,
                 error: Some(err.to_string()),
             },
@@ -318,6 +351,22 @@ impl Supervisor {
             fs::write(&path, serde_json::to_vec_pretty(&self.reports)?)?;
             palisade_log::persist(format!("report {}", path.display()));
         }
+        if let Some(path) = &self.cfg.report_json {
+            fs::write(path, serde_json::to_vec_pretty(&self.reports)?)?;
+            palisade_log::persist(format!("json report {path}"));
+        }
+        if let Some(path) = &self.cfg.report_junit {
+            fs::write(path, junit_xml(&self.reports))?;
+            palisade_log::persist(format!("junit report {path}"));
+        }
         Ok(())
+    }
+}
+
+fn expected_result(scenario: Scenario) -> &'static str {
+    if scenario.is_known_gap() {
+        "pass-or-known-gap"
+    } else {
+        "pass"
     }
 }
