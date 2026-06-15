@@ -30,7 +30,7 @@ pub(crate) fn run_evfs_raft_tests(t: &mut TestRunner, mode: &str) -> Result<()> 
 
     unsafe {
         conn.load_extension_enable()?;
-        match conn.load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>) {
+        match conn.load_extension(format!("../target/{mode}/libsqlevfs"), None::<&str>) {
             Ok(()) => t.ok("loaded sqlevfs extension for raft tests"),
             Err(e) => {
                 t.fail("load sqlevfs extension", &e);

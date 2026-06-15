@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::types::{
     AppResult,
     ClusterFollowerWalSync,
+    ClusterRaftStorage,
     Config,
     Engine,
     SummaryOutput,
@@ -104,6 +105,14 @@ pub(crate) fn parse_args(args: Vec<String>) -> AppResult<Config> {
                     return Err("--cluster-follower-wal-sync-ms must be > 0".into());
                 }
             }
+            "--cluster-raft-storage" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or("missing value for --cluster-raft-storage")?;
+                cfg.cluster_raft_storage = ClusterRaftStorage::parse(value)
+                    .ok_or_else(|| format!("unknown cluster raft storage mode '{value}'"))?;
+            }
             other => return Err(format!("unknown option '{other}'").into()),
         }
         i += 1;
@@ -130,4 +139,30 @@ fn print_help() {
     println!("  --cluster-follower-wal-sync per-batch|coalesced");
     println!("  --cluster-follower-wal-sync-batches N");
     println!("  --cluster-follower-wal-sync-ms N");
+    println!("  --cluster-raft-storage memory|persistent");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        cli::parse_args,
+        types::{ClusterRaftStorage, Engine},
+    };
+
+    #[test]
+    fn default_cluster_raft_storage_is_memory() {
+        let cfg = parse_args(vec![]).expect("parse default config");
+        assert_eq!(cfg.engine, Engine::Cluster);
+        assert_eq!(cfg.cluster_raft_storage, ClusterRaftStorage::Memory);
+    }
+
+    #[test]
+    fn parses_persistent_cluster_raft_storage() {
+        let cfg = parse_args(vec![
+            "--cluster-raft-storage".to_string(),
+            "persistent".to_string(),
+        ])
+        .expect("parse persistent storage mode");
+        assert_eq!(cfg.cluster_raft_storage, ClusterRaftStorage::Persistent);
+    }
 }

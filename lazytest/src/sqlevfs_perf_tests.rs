@@ -35,7 +35,7 @@ enum Engine {
 pub(crate) fn run_evfs_perf_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("Performance: EVFS Overhead vs Plain SQLite");
 
-    let evfs_path = format!("../sqlevfs/target/{mode}/libsqlevfs.so");
+    let evfs_path = format!("../target/{mode}/libsqlevfs.so");
     if !Path::new(&evfs_path).exists() {
         t.fail(
             "perf suite prerequisites",
@@ -95,7 +95,7 @@ fn load_evfs_extension(mode: &str) -> Result<()> {
     let loader = Connection::open(":memory:")?;
     unsafe {
         loader.load_extension_enable()?;
-        loader.load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)?;
+        loader.load_extension(format!("../target/{mode}/libsqlevfs"), None::<&str>)?;
         loader.load_extension_disable()?;
     }
     Ok(())

@@ -9,7 +9,7 @@ pub(crate) fn run_sqlshim_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
 
     unsafe {
         conn.load_extension_enable()?;
-        match conn.load_extension(format!("../sqlsec/target/{mode}/libsqlsec"), None::<&str>) {
+        match conn.load_extension(format!("../target/{mode}/libsqlsec"), None::<&str>) {
             Ok(()) => t.ok("loaded sqlsec extension"),
             Err(e) => {
                 t.fail("load sqlsec extension", &e);

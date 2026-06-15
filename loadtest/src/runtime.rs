@@ -52,12 +52,10 @@ pub(crate) fn prepare_runtime(cfg: &Config) -> AppResult<Runtime> {
         .to_path_buf();
     let libs = LibPaths {
         sqlsec: repo_root
-            .join("sqlsec")
             .join("target")
             .join(&cfg.mode)
             .join("libsqlsec.so"),
         sqlevfs: repo_root
-            .join("sqlevfs")
             .join("target")
             .join(&cfg.mode)
             .join("libsqlevfs.so"),
@@ -310,7 +308,8 @@ fn raft_options_json(cfg: &Config) -> AppResult<String> {
             "mode": cfg.cluster_follower_wal_sync.as_str(),
             "max_batches": cfg.cluster_follower_wal_sync_batches,
             "max_delay_ms": cfg.cluster_follower_wal_sync_ms,
-        }
+        },
+        "storage": cfg.cluster_raft_storage.as_str(),
     })
     .to_string())
 }

@@ -200,6 +200,9 @@ For cluster runs, validation waits for follower Raft replay and materialized fol
 - `--cluster-follower-wal-sync per-batch|coalesced`: choose follower WAL sync policy for cluster runs
 - `--cluster-follower-wal-sync-batches N`: coalesced sync batch threshold, default `64`
 - `--cluster-follower-wal-sync-ms N`: coalesced sync delay threshold, default `5`
+- `--cluster-raft-storage memory|persistent`: choose in-memory benchmark storage
+  or persistent Raft state. `loadtest` defaults to `memory`; use `persistent`
+  for durability-oriented measurements.
 
 The default cluster follower WAL sync policy is `per-batch`, which syncs follower WAL once per applied Raft batch. `coalesced` is an explicit benchmark/performance mode that writes follower WAL immediately but syncs it after the configured batch or delay threshold; this can improve write-heavy clustered benchmarks while weakening follower crash durability inside the sync window.
 

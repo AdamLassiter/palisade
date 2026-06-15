@@ -26,8 +26,8 @@ fi
 dd if=/dev/urandom of=/tmp/evfs-test-master.key bs=32 count=1
 
 # Pick correct target dir + preload library
-TARGET_DIR="target/$MODE"
-SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
+TARGET_DIR="../target/$MODE"
+SQLSHIM_LIB="../target/$MODE/libsqlshim.so"
 
 # Run lazytest
 cd lazytest
@@ -37,12 +37,12 @@ EVFS_KEYFILE=/tmp/evfs-test-master.key \
   LD_PRELOAD="$SQLSHIM_LIB" \
   RUST_BACKTRACE=full \
   RUST_LIB_BACKTRACE=1 \
-  "./$TARGET_DIR/lazytest" \
+  "$TARGET_DIR/lazytest" \
   --release --perf
 else
 EVFS_KEYFILE=/tmp/evfs-test-master.key \
   LD_PRELOAD="$SQLSHIM_LIB" \
   RUST_BACKTRACE=full \
   RUST_LIB_BACKTRACE=1 \
-  "./$TARGET_DIR/lazytest"
+  "$TARGET_DIR/lazytest"
 fi

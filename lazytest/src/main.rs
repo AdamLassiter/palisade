@@ -63,7 +63,7 @@ fn main() {
     let mut t = TestRunner::new();
 
     if !perf_only {
-        let sqlsec_path = PathBuf::from(format!("../sqlsec/target/{mode}/libsqlsec.so"));
+        let sqlsec_path = PathBuf::from(format!("../target/{mode}/libsqlsec.so"));
 
         if sqlsec_path.exists() {
             match run_sqlsec_tests(&mut t, mode) {
@@ -81,7 +81,7 @@ fn main() {
             ));
         }
 
-        let evfs_path_str = format!("../sqlevfs/target/{}/libsqlevfs.so", mode);
+        let evfs_path_str = format!("../target/{}/libsqlevfs.so", mode);
         let evfs_path = Path::new(&evfs_path_str);
 
         if evfs_path.exists() {

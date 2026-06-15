@@ -19,7 +19,7 @@ struct SqlsecPerfSample {
 pub(crate) fn run_sqlsec_perf_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("Performance: sqlsec Function-Call + View Overhead");
 
-    let lib_path = format!("../sqlsec/target/{mode}/libsqlsec.so");
+    let lib_path = format!("../target/{mode}/libsqlsec.so");
     if !std::path::Path::new(&lib_path).exists() {
         t.fail(
             "sqlsec perf prerequisites",
@@ -76,7 +76,7 @@ fn run_single(mode: &str) -> Result<SqlsecPerfSample> {
     let conn = Connection::open(":memory:")?;
     unsafe {
         conn.load_extension_enable()?;
-        conn.load_extension(format!("../sqlsec/target/{mode}/libsqlsec"), None::<&str>)?;
+        conn.load_extension(format!("../target/{mode}/libsqlsec"), None::<&str>)?;
         conn.load_extension_disable()?;
     }
 

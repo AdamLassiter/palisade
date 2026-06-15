@@ -38,7 +38,7 @@ enum Engine {
 pub(crate) fn run_evfs_raft_perf_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("Performance: evfs Raft Workload vs EVFS/SQLite");
 
-    let ext_path = format!("../sqlevfs/target/{mode}/libsqlevfs.so");
+    let ext_path = format!("../target/{mode}/libsqlevfs.so");
     if !Path::new(&ext_path).exists() {
         t.fail(
             "evfs raft perf prerequisites",
@@ -159,7 +159,7 @@ fn load_evfs_extension(mode: &str) -> Result<()> {
     let loader = Connection::open(":memory:")?;
     unsafe {
         loader.load_extension_enable()?;
-        loader.load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)?;
+        loader.load_extension(format!("../target/{mode}/libsqlevfs"), None::<&str>)?;
         loader.load_extension_disable()?;
     }
     Ok(())
@@ -398,7 +398,7 @@ fn stop_raft_best_effort(db_path: &Path, mode: &str) {
 fn load_evfs_sql_functions(conn: &Connection, mode: &str) -> Result<()> {
     unsafe {
         conn.load_extension_enable()?;
-        conn.load_extension(format!("../sqlevfs/target/{mode}/libsqlevfs"), None::<&str>)?;
+        conn.load_extension(format!("../target/{mode}/libsqlevfs"), None::<&str>)?;
         conn.load_extension_disable()?;
     }
     Ok(())

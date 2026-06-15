@@ -42,12 +42,10 @@ impl Supervisor {
             .to_path_buf();
         let libs = LibPaths {
             sqlsec: repo_root
-                .join("sqlsec")
                 .join("target")
                 .join(&cfg.mode)
                 .join("libsqlsec.so"),
             sqlevfs: repo_root
-                .join("sqlevfs")
                 .join("target")
                 .join(&cfg.mode)
                 .join("libsqlevfs.so"),

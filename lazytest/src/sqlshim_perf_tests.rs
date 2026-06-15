@@ -22,7 +22,7 @@ struct SqlshimPerfSample {
 pub(crate) fn run_sqlshim_perf_tests(t: &mut TestRunner, mode: &str) -> Result<()> {
     t.section("Performance: sqlshim Overhead vs Plain SQLite");
 
-    let sqlshim_path = format!("../sqlshim/target/{mode}/libsqlshim.so");
+    let sqlshim_path = format!("../target/{mode}/libsqlshim.so");
     if !Path::new(&sqlshim_path).exists() {
         t.fail(
             "sqlshim perf prerequisites",

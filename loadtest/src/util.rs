@@ -194,6 +194,14 @@ pub(crate) fn print_metrics(
         validation_elapsed.as_secs_f64()
     );
     println!("  {}engine{}: {}", style(DIM), style(RESET), cfg.engine);
+    if cfg.engine.uses_cluster() {
+        println!(
+            "  {}raft storage{}: {}",
+            style(DIM),
+            style(RESET),
+            cfg.cluster_raft_storage
+        );
+    }
     println!(
         "  {}workload{}: {} ({})",
         style(DIM),

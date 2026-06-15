@@ -42,8 +42,8 @@ dd if=/dev/urandom of="$KEYFILE" bs=32 count=1 status=none
 
 cd chaostest
 
-SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
-CMD=("./target/$MODE/chaostest" "${ARGS[@]}")
+SQLSHIM_LIB="../target/$MODE/libsqlshim.so"
+CMD=("../target/$MODE/chaostest" "${ARGS[@]}")
 APP_TIMEOUT_SECS=$((DURATION_SECS * 6 + 60))
 
 EVFS_KEYFILE="$KEYFILE" \

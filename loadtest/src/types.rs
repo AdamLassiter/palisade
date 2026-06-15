@@ -37,6 +37,12 @@ pub(crate) enum ClusterFollowerWalSync {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClusterRaftStorage {
+    Memory,
+    Persistent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkloadProfile {
     Balanced,
     ReadHeavy,
@@ -179,6 +185,29 @@ impl fmt::Display for ClusterFollowerWalSync {
     }
 }
 
+impl ClusterRaftStorage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Persistent => "persistent",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "memory" | "in-memory" | "in_memory" => Some(Self::Memory),
+            "persistent" | "disk" => Some(Self::Persistent),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ClusterRaftStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub(crate) mode: String,
@@ -194,6 +223,7 @@ pub(crate) struct Config {
     pub(crate) cluster_follower_wal_sync: ClusterFollowerWalSync,
     pub(crate) cluster_follower_wal_sync_batches: usize,
     pub(crate) cluster_follower_wal_sync_ms: u64,
+    pub(crate) cluster_raft_storage: ClusterRaftStorage,
 }
 
 impl Default for Config {
@@ -212,6 +242,7 @@ impl Default for Config {
             cluster_follower_wal_sync: ClusterFollowerWalSync::PerBatch,
             cluster_follower_wal_sync_batches: 64,
             cluster_follower_wal_sync_ms: 5,
+            cluster_raft_storage: ClusterRaftStorage::Memory,
         }
     }
 }

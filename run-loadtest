@@ -54,8 +54,8 @@ dd if=/dev/urandom of="$KEYFILE" bs=32 count=1 status=none
 
 cd loadtest
 
-SQLSHIM_LIB="../sqlshim/target/$MODE/libsqlshim.so"
-CMD=("./target/$MODE/loadtest" "${ARGS[@]}")
+SQLSHIM_LIB="../target/$MODE/libsqlshim.so"
+CMD=("../target/$MODE/loadtest" "${ARGS[@]}")
 APP_TIMEOUT_SECS=$((DURATION_SECS * 2 + 30))
 RUN_MULTIPLIER=1
 if [[ "$WORKLOAD" == "all" ]]; then

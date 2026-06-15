@@ -77,6 +77,16 @@ struct RaftSqlConfig {
 struct RaftInitOptions {
     #[serde(default)]
     follower_wal_sync: FollowerWalSyncConfig,
+    #[serde(default)]
+    storage: RaftStorageMode,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RaftStorageMode {
+    Memory,
+    #[default]
+    Persistent,
 }
 
 struct ManagedRaft {
@@ -740,7 +750,10 @@ pub(crate) extern "C" fn ffi_evfs_raft_init(
                 page_size: 4096,
                 reserve_size: 48,
                 replay_target,
-                storage_path: raft_state_path_for_db(&db_path, node_id),
+                storage_path: match options.storage {
+                    RaftStorageMode::Memory => None,
+                    RaftStorageMode::Persistent => raft_state_path_for_db(&db_path, node_id),
+                },
             };
 
             start_with_config(cfg.clone())?;

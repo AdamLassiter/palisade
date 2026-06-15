@@ -19,7 +19,7 @@ From inside `loadtest/`:
 
 ```bash
 EVFS_KEYFILE=/tmp/evfs-loadtest-master.key \
-LD_PRELOAD=../sqlshim/target/release/libsqlshim.so \
+LD_PRELOAD=../target/release/libsqlshim.so \
 target/release/loadtest --engine cluster --duration-secs 60 --workers 8
 ```
 
@@ -56,3 +56,17 @@ grouped under each workload. The default is `workloads`.
 - `sqlsec` audit metadata initialization and audit-log non-leakage checks
 - encrypted-file plaintext leakage checks for EVFS-backed modes
 - leader/follower convergence and follower write rejection in cluster mode
+
+## Cluster Durability Mode
+
+`loadtest` defaults cluster Raft storage to `memory` so throughput runs measure
+the replication path without rewriting the persistent Raft state document on
+every submit. Use persistent mode when the run is intended to exercise restart
+durability rather than peak throughput:
+
+```bash
+../run-loadtest --release --engine cluster --cluster-raft-storage persistent --duration-secs 10
+```
+
+The durability-focused `chaostest` harness uses persistent Raft state for process
+restart scenarios.
